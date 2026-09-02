@@ -218,7 +218,8 @@ export default function App() {
   }, [currentGenerationId, generationCount]);
 
   // Handle incoming final speech from Deepgram STT
-  const handleFinalSpeechTranscript = useCallback((finalText: string) => {
+  const handleFinalSpeechTranscript = useCallback(async (finalText: string) => {
+    if (!finalText.trim()) return;
     setUserTranscript(finalText);
 
     // If tool is running or AI is speaking, user speech triggers interruption!
@@ -228,7 +229,7 @@ export default function App() {
       return;
     }
 
-    // Otherwise standard user request flow
+    // Otherwise standard user request flow to Groq LLM
     setVoiceState('thinking');
     setTurns((prev) => [
       ...prev,
@@ -241,52 +242,107 @@ export default function App() {
       },
     ]);
 
-    // Transition to 5-second travel tool execution
-    scheduleStep(() => {
-      setVoiceState('tool_running');
-      setToolProgress(0);
-      setToolRemainingSeconds(5.0);
+    try {
+      const res = await fetch('http://localhost:8000/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          session_id: 'default',
+          message: finalText,
+          generation_id: currentGenerationId,
+        }),
+      });
 
-      const startTime = Date.now();
-      const interval = setInterval(() => {
-        const elapsed = (Date.now() - startTime) / 1000;
-        const progress = Math.min(100, (elapsed / 5.0) * 100);
-        setToolProgress(progress);
-        setToolRemainingSeconds(Math.max(0, 5.0 - elapsed));
-        if (progress >= 100) clearInterval(interval);
-      }, 80);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
 
-      scheduleStep(() => {
-        clearInterval(interval);
-        setVoiceState('speaking');
+      setMetrics((prev) => ({
+        ...prev,
+        totalRoundtripMs: data.latency_ms || 240,
+      }));
 
-        const spoken =
-          'I found 4 trains from Kolkata to Delhi tomorrow: Poorva Express in the morning at 08:00, and 3 evening trains including Howrah Rajdhani at 16:55. Which time works best for you?';
-        setAiTranscript(spoken);
-
+      if (data.response_type === 'text' && data.text) {
+        setAiTranscript(data.text);
         setTurns((prev) => [
           ...prev,
           {
-            id: `turn_${Date.now()}_assistant_normal`,
+            id: `turn_${Date.now()}_assistant_real`,
             generationId: currentGenerationId,
             sender: 'assistant',
-            text: spoken,
+            text: data.text,
             timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-            toolDetails: {
-              toolName: 'search_trains',
-              params: { origin: 'Kolkata', destination: 'Delhi', date: 'tomorrow' },
-              executionTimeMs: 5000,
-              cancelled: false,
-              results: ALL_TRAINS,
-            },
           },
         ]);
+        setVoiceState('idle');
+      } else if (data.response_type === 'tool_call') {
+        const toolCall = data.tool_calls[0];
+        const args = toolCall?.arguments || {};
+        const timeConstraint = args.time_constraint || 'any';
 
-        scheduleStep(() => {
+        // Transition to 5-second travel tool execution
+        setVoiceState('tool_running');
+        setToolProgress(0);
+        setToolRemainingSeconds(5.0);
+
+        const startTime = Date.now();
+        const interval = setInterval(() => {
+          const elapsed = (Date.now() - startTime) / 1000;
+          const progress = Math.min(100, (elapsed / 5.0) * 100);
+          setToolProgress(progress);
+          setToolRemainingSeconds(Math.max(0, 5.0 - elapsed));
+          if (progress >= 100) clearInterval(interval);
+        }, 80);
+
+        scheduleStep(async () => {
+          clearInterval(interval);
+          const filteredTrains = timeConstraint === 'evening'
+            ? ALL_TRAINS.filter(t => t.departureTimeType === 'evening')
+            : ALL_TRAINS;
+
+          try {
+            // Get final concise spoken response from Groq LLM
+            const toolRes = await fetch('http://localhost:8000/api/chat/tool_result', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                session_id: 'default',
+                tool_name: 'search_trains',
+                tool_results: filteredTrains.map(t => `${t.name} at ${t.departure}`).join(', '),
+                generation_id: currentGenerationId,
+              }),
+            });
+            const toolData = await toolRes.json();
+            const spoken = toolData.text || `I found ${filteredTrains.length} trains from Kolkata to Delhi tomorrow. Howrah Rajdhani departs at 16:55.`;
+            setAiTranscript(spoken);
+
+            setTurns((prev) => [
+              ...prev,
+              {
+                id: `turn_${Date.now()}_assistant_normal`,
+                generationId: currentGenerationId,
+                sender: 'assistant',
+                text: spoken,
+                timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+                toolDetails: {
+                  toolName: 'search_trains',
+                  params: args,
+                  executionTimeMs: 5000,
+                  cancelled: false,
+                  results: filteredTrains,
+                },
+              },
+            ]);
+          } catch (e) {
+            console.warn('Tool synthesis error:', e);
+          }
+
           setVoiceState('idle');
-        }, 6500);
-      }, 5050);
-    }, 800);
+        }, 5050);
+      }
+    } catch (err) {
+      console.error('Chat endpoint error:', err);
+      setVoiceState('idle');
+    }
   }, [voiceState, handleInterrupt, currentGenerationId]);
 
   // Deepgram Realtime STT Hook
