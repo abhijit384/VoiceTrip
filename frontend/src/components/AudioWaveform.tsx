@@ -5,9 +5,14 @@ import type { VoiceState } from '../types/voice';
 interface AudioWaveformProps {
   state: VoiceState;
   barCount?: number;
+  micVolume?: number; // 0 to 100 from real AudioContext
 }
 
-export const AudioWaveform: FC<AudioWaveformProps> = ({ state, barCount = 28 }) => {
+export const AudioWaveform: FC<AudioWaveformProps> = ({
+  state,
+  barCount = 28,
+  micVolume = 0,
+}) => {
   // Generate pseudo-random delay and base heights for organic feeling
   const bars = useMemo(() => {
     return Array.from({ length: barCount }, (_, i) => {
@@ -46,7 +51,23 @@ export const AudioWaveform: FC<AudioWaveformProps> = ({ state, barCount = 28 }) 
         let height = '8px';
         let animationStyle = {};
 
-        if (state === 'listening' || state === 'speaking') {
+        if (state === 'listening') {
+          // If real microphone volume is available, scale height dynamically with live voice
+          if (micVolume > 5) {
+            const spread = Math.sin(idx * 0.5) * 15;
+            const dynamicHeight = Math.min(100, Math.max(15, micVolume * 1.2 + spread));
+            height = `${dynamicHeight}%`;
+            animationStyle = {
+              transition: 'height 0.08s ease-out',
+            };
+          } else {
+            height = `${bar.minH}%`;
+            animationStyle = {
+              animation: `waveformAnim ${bar.duration}s ease-in-out infinite alternate`,
+              animationDelay: `${bar.delay}s`,
+            };
+          }
+        } else if (state === 'speaking') {
           height = `${bar.minH}%`;
           animationStyle = {
             animation: `waveformAnim ${bar.duration}s ease-in-out infinite alternate`,
@@ -72,7 +93,11 @@ export const AudioWaveform: FC<AudioWaveformProps> = ({ state, barCount = 28 }) 
           };
         } else {
           // idle
-          height = '6px';
+          if (micVolume > 10) {
+            height = `${Math.min(80, micVolume)}%`;
+          } else {
+            height = '6px';
+          }
         }
 
         return (

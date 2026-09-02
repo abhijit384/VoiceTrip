@@ -5,6 +5,7 @@ import { LiveTranscripts } from './components/LiveTranscripts';
 import { ConversationFeed } from './components/ConversationFeed';
 import { TelemetryHUD } from './components/TelemetryHUD';
 import { DemoScenarios } from './components/DemoScenarios';
+import { useLiveKitSession } from './hooks/useLiveKitSession';
 import type { VoiceState, ConversationTurn, LatencyMetrics, TrainOption } from './types/voice';
 
 // Realistic IRCTC mock data
@@ -52,6 +53,9 @@ const ALL_TRAINS: TrainOption[] = [
 ];
 
 export default function App() {
+  // LiveKit Realtime Session Hook
+  const livekit = useLiveKitSession();
+
   // Realtime Voice States
   const [voiceState, setVoiceState] = useState<VoiceState>('idle');
   const [generationCount, setGenerationCount] = useState<number>(1);
@@ -62,7 +66,6 @@ export default function App() {
   const [interruptionCutoffMs, setInterruptionCutoffMs] = useState<number>(24);
   const [staleResultsDropped, setStaleResultsDropped] = useState<number>(0);
   const [isSimulating, setIsSimulating] = useState<boolean>(false);
-  const [isConnected] = useState<boolean>(true);
 
   // Telemetry metrics
   const [metrics, setMetrics] = useState<LatencyMetrics>({
@@ -117,7 +120,7 @@ export default function App() {
   // Helper to add timeout and track it
   const scheduleStep = (fn: () => void, delayMs: number) => {
     const timer = setTimeout(fn, delayMs);
-    activeTimersRef.current.push(timer);
+    activeTimersRef.current.push(timer as unknown as number);
     return timer;
   };
 
@@ -245,6 +248,11 @@ export default function App() {
     handleReset();
     setIsSimulating(true);
 
+    // Auto-connect microphone if not connected
+    if (livekit.status !== 'connected') {
+      livekit.connect();
+    }
+
     // Step 1: User speaks initial prompt
     setVoiceState('listening');
     setUserTranscript('');
@@ -297,6 +305,10 @@ export default function App() {
   const handleRunNormalSearch = () => {
     handleReset();
     setIsSimulating(true);
+
+    if (livekit.status !== 'connected') {
+      livekit.connect();
+    }
 
     setVoiceState('listening');
     scheduleStep(() => {
@@ -381,6 +393,10 @@ export default function App() {
     handleReset();
     setIsSimulating(true);
 
+    if (livekit.status !== 'connected') {
+      livekit.connect();
+    }
+
     setVoiceState('speaking');
     setAiTranscript('Here are your train details for tomorrow. Howrah Rajdhani departs at 16:55 from platform 9...');
 
@@ -390,8 +406,14 @@ export default function App() {
     }, 1800);
   };
 
-  // Interactive Mic Button click
-  const handleMicToggle = () => {
+  // Interactive Center Button click
+  const handleCenterClick = () => {
+    // If not connected, connect LiveKit session first to request microphone
+    if (livekit.status !== 'connected') {
+      livekit.connect();
+      return;
+    }
+
     if (voiceState === 'idle') {
       setVoiceState('listening');
       setUserTranscript('');
@@ -412,10 +434,13 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[#080c14] text-slate-100 flex flex-col items-center justify-between p-3 md:p-6 selection:bg-cyan-500/25">
-      {/* Top Header */}
+      {/* Top Header with LiveKit Status and Controls */}
       <Header
         generationId={currentGenerationId}
-        isConnected={isConnected}
+        connectionStatus={livekit.status}
+        isCloudConfigured={livekit.isCloudConfigured}
+        onConnect={() => livekit.connect()}
+        onDisconnect={() => livekit.disconnect()}
         onReset={handleReset}
         latencyPing={24}
       />
@@ -425,11 +450,18 @@ export default function App() {
         {/* Hero Card with Glowing Mic, Waveform, and Tool Progress Bar */}
         <VoiceStatusCard
           state={voiceState}
+          connectionStatus={livekit.status}
+          micPermission={livekit.micPermission}
+          isMicActive={livekit.isMicActive}
+          micVolume={livekit.micVolume}
           toolProgress={toolProgress}
           toolRemainingSeconds={toolRemainingSeconds}
-          onMicClick={handleMicToggle}
-          onInterruptClick={handleInterrupt}
           interruptionCutoffMs={interruptionCutoffMs}
+          onMicClick={handleCenterClick}
+          onInterruptClick={handleInterrupt}
+          onToggleMicMute={livekit.toggleMic}
+          onConnect={() => livekit.connect()}
+          errorMessage={livekit.errorMessage}
         />
 
         {/* Live Transcripts: Real-time User vs Rime Spoken Output */}
@@ -464,7 +496,7 @@ export default function App() {
         <div className="flex items-center gap-2">
           <span className="font-semibold text-slate-400">VoiceTrip</span>
           <span>•</span>
-          <span>Rime Hackathon Challenge Prototype</span>
+          <span>LiveKit Realtime Transport Active</span>
         </div>
         <div>
           Primary Voice Powered by <span className="text-cyan-400 font-medium">Rime TTS</span> • Zero Stale Audio Guarantee

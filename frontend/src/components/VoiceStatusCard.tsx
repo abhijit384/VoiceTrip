@@ -1,6 +1,7 @@
 import type { FC } from 'react';
 import {
   Mic,
+  MicOff,
   Square,
   AlertTriangle,
   Loader2,
@@ -9,26 +10,42 @@ import {
   Cpu,
   Clock,
   Zap,
+  ShieldAlert,
 } from 'lucide-react';
 import type { VoiceState } from '../types/voice';
+import type { LiveKitConnectionStatus, MicPermissionStatus } from '../hooks/useLiveKitSession';
 import { AudioWaveform } from './AudioWaveform';
 
 interface VoiceStatusCardProps {
   state: VoiceState;
+  connectionStatus: LiveKitConnectionStatus;
+  micPermission: MicPermissionStatus;
+  isMicActive: boolean;
+  micVolume: number;
   toolProgress: number; // 0 to 100
   toolRemainingSeconds: number;
+  interruptionCutoffMs: number;
   onMicClick: () => void;
   onInterruptClick: () => void;
-  interruptionCutoffMs: number;
+  onToggleMicMute: () => void;
+  onConnect: () => void;
+  errorMessage: string | null;
 }
 
 export const VoiceStatusCard: FC<VoiceStatusCardProps> = ({
   state,
+  connectionStatus,
+  micPermission,
+  isMicActive,
+  micVolume,
   toolProgress,
   toolRemainingSeconds,
+  interruptionCutoffMs,
   onMicClick,
   onInterruptClick,
-  interruptionCutoffMs,
+  onToggleMicMute,
+  onConnect,
+  errorMessage,
 }) => {
   // Config for status indicators
   const getStatusBadge = () => {
@@ -39,7 +56,7 @@ export const VoiceStatusCard: FC<VoiceStatusCardProps> = ({
           dot: 'bg-cyan-400 animate-ping',
           icon: <Mic className="w-3.5 h-3.5 text-cyan-400" />,
           title: 'Listening',
-          subtitle: 'Speak your travel request or constraint...',
+          subtitle: 'Speak your travel request or constraint into your microphone...',
         };
       case 'thinking':
         return {
@@ -77,10 +94,13 @@ export const VoiceStatusCard: FC<VoiceStatusCardProps> = ({
       default:
         return {
           bg: 'bg-slate-900/80 border-slate-800 text-slate-300',
-          dot: 'bg-slate-500',
+          dot: connectionStatus === 'connected' ? 'bg-emerald-400' : 'bg-slate-500',
           icon: <Sparkles className="w-3.5 h-3.5 text-cyan-400" />,
-          title: 'Ready',
-          subtitle: 'Press microphone or select an acceptance scenario below',
+          title: connectionStatus === 'connected' ? 'Microphone Active' : 'Ready',
+          subtitle:
+            connectionStatus === 'connected'
+              ? 'Live microphone streaming. Tap mic or trigger test below.'
+              : 'Connect microphone to begin live voice interaction.',
         };
     }
   };
@@ -105,14 +125,24 @@ export const VoiceStatusCard: FC<VoiceStatusCardProps> = ({
       />
 
       {/* Top State Pill Badge */}
-      <div
-        className={`inline-flex items-center gap-2 px-4 py-1.5 rounded-full border text-xs font-semibold backdrop-blur-md transition-all duration-300 ${badge.bg}`}
-      >
-        <span className="relative flex h-2 w-2">
-          <span className={`relative inline-flex rounded-full h-2 w-2 ${badge.dot}`} />
-        </span>
-        {badge.icon}
-        <span>{badge.title}</span>
+      <div className="flex items-center gap-2">
+        <div
+          className={`inline-flex items-center gap-2 px-4 py-1.5 rounded-full border text-xs font-semibold backdrop-blur-md transition-all duration-300 ${badge.bg}`}
+        >
+          <span className="relative flex h-2 w-2">
+            <span className={`relative inline-flex rounded-full h-2 w-2 ${badge.dot}`} />
+          </span>
+          {badge.icon}
+          <span>{badge.title}</span>
+        </div>
+
+        {/* Real Mic Live Volume Indicator */}
+        {connectionStatus === 'connected' && isMicActive && (
+          <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-slate-900 border border-slate-800 text-[10px] font-mono text-cyan-300">
+            <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+            <span>Mic Vol: {micVolume}%</span>
+          </div>
+        )}
       </div>
 
       {/* State Subtitle */}
@@ -120,10 +150,42 @@ export const VoiceStatusCard: FC<VoiceStatusCardProps> = ({
         {badge.subtitle}
       </p>
 
-      {/* Dynamic Audio Waveform */}
-      <AudioWaveform state={state} barCount={32} />
+      {/* Dynamic Audio Waveform with live volume responsiveness */}
+      <AudioWaveform state={state} barCount={32} micVolume={micVolume} />
 
-      {/* Tool Running Countdown Bar (when tool is executing) */}
+      {/* Permission Denied Alert */}
+      {micPermission === 'denied' && (
+        <div className="w-full max-w-md bg-rose-950/60 border border-rose-500/60 rounded-xl p-3.5 text-rose-300 text-xs flex items-center gap-3 animate-fadeIn">
+          <ShieldAlert className="w-5 h-5 text-rose-400 flex-shrink-0" />
+          <div className="flex-1">
+            <div className="font-bold">Microphone Access Denied</div>
+            <div className="text-[11px] text-rose-200/80 mt-0.5">
+              Please click the camera/microphone icon in your browser URL bar to allow microphone access, then refresh.
+            </div>
+          </div>
+          <button
+            onClick={onConnect}
+            className="px-2.5 py-1 rounded bg-rose-900 hover:bg-rose-800 text-white text-[11px] font-semibold transition"
+          >
+            Retry
+          </button>
+        </div>
+      )}
+
+      {/* Error Notice Banner */}
+      {errorMessage && micPermission !== 'denied' && (
+        <div className="w-full max-w-md bg-amber-950/40 border border-amber-500/40 rounded-xl p-3 text-amber-300 text-xs flex items-center justify-between animate-fadeIn">
+          <span className="text-[11px]">{errorMessage}</span>
+          <button
+            onClick={onConnect}
+            className="text-[10px] font-bold underline hover:text-white ml-2"
+          >
+            Reconnect
+          </button>
+        </div>
+      )}
+
+      {/* Tool Running Countdown Bar */}
       {state === 'tool_running' && (
         <div className="w-full max-w-md bg-slate-950/80 border border-amber-500/40 rounded-xl p-3.5 space-y-2.5 animate-fadeIn">
           <div className="flex items-center justify-between text-xs">
@@ -176,9 +238,24 @@ export const VoiceStatusCard: FC<VoiceStatusCardProps> = ({
         </div>
       )}
 
-      {/* Large Glowing Microphone & Quick Action Center */}
-      <div className="flex items-center gap-6 mt-1">
-        {/* Main Microphone Button */}
+      {/* Main Controls Centerpiece */}
+      <div className="flex items-center gap-5 mt-1">
+        {/* Mute/Unmute Mic Toggle (visible when connected) */}
+        {connectionStatus === 'connected' && (
+          <button
+            onClick={onToggleMicMute}
+            className={`p-3 rounded-full border transition ${
+              isMicActive
+                ? 'bg-slate-800/80 hover:bg-slate-700 border-slate-700 text-slate-300'
+                : 'bg-rose-950/70 hover:bg-rose-900 border-rose-500 text-rose-300'
+            }`}
+            title={isMicActive ? 'Mute Microphone' : 'Unmute Microphone'}
+          >
+            {isMicActive ? <Mic className="w-4 h-4" /> : <MicOff className="w-4 h-4" />}
+          </button>
+        )}
+
+        {/* Primary Microphone Button */}
         <button
           onClick={onMicClick}
           className={`relative group rounded-full p-6 transition-all duration-300 transform active:scale-95 ${
@@ -190,7 +267,7 @@ export const VoiceStatusCard: FC<VoiceStatusCardProps> = ({
               ? 'bg-gradient-to-tr from-amber-500 to-orange-400 text-slate-950 shadow-[0_0_30px_rgba(245,158,11,0.6)]'
               : 'bg-slate-800 hover:bg-slate-700 text-cyan-400 border-2 border-slate-700 hover:border-cyan-500/50 shadow-lg'
           }`}
-          title={state === 'listening' ? 'Stop listening' : 'Start voice input'}
+          title={state === 'listening' ? 'Stop listening' : 'Start voice interaction'}
         >
           {state === 'listening' ? (
             <Square className="w-8 h-8 fill-current" />
@@ -198,13 +275,13 @@ export const VoiceStatusCard: FC<VoiceStatusCardProps> = ({
             <Mic className="w-8 h-8" />
           )}
 
-          {/* Pulse ring when active */}
+          {/* Pulse ring when listening */}
           {state === 'listening' && (
             <span className="absolute -inset-2 rounded-full border-2 border-cyan-400/50 animate-ping pointer-events-none" />
           )}
         </button>
 
-        {/* Rapid Barge-in Interruption Button (accessible whenever tool is running or AI is speaking) */}
+        {/* Rapid Barge-in Interruption Button (accessible during tool run or AI speech) */}
         {(state === 'tool_running' || state === 'speaking') && (
           <button
             onClick={onInterruptClick}
@@ -217,14 +294,16 @@ export const VoiceStatusCard: FC<VoiceStatusCardProps> = ({
         )}
       </div>
 
-      <div className="text-[11px] text-slate-500 font-medium">
+      <div className="text-[11px] text-slate-500 font-medium text-center">
         {state === 'listening'
-          ? 'Tap mic to complete utterance'
+          ? 'Tap mic to finish speaking'
           : state === 'tool_running'
           ? 'Simulating 5.0s IRCTC delay. Interrupt anytime!'
           : state === 'speaking'
           ? 'Rime TTS output streaming. Barge in anytime.'
-          : 'Microphone ready. Click to speak.'}
+          : connectionStatus === 'connected'
+          ? 'Microphone live. Speak or click to start.'
+          : 'Click "Connect Mic" or the center button to activate microphone.'}
       </div>
     </div>
   );

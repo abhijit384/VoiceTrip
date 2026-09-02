@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.api.health import router as health_router
+from app.api.livekit_token import router as livekit_router
 
 logging.basicConfig(
     level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO),
@@ -41,6 +42,7 @@ app.add_middleware(
 
 # Mount API Routers
 app.include_router(health_router, prefix="/api")
+app.include_router(livekit_router, prefix="/api")
 
 
 @app.get("/")
