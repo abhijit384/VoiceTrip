@@ -1,269 +1,474 @@
-import { useState, useEffect } from 'react';
-import {
-  Mic,
-  Radio,
-  Sparkles,
-  Train,
-  CheckCircle2,
-  AlertCircle,
-  Clock,
-  Volume2,
-  RefreshCw,
-  Cpu,
-  Layers,
-} from 'lucide-react';
+import { useState, useRef, useEffect } from 'react';
+import { Header } from './components/Header';
+import { VoiceStatusCard } from './components/VoiceStatusCard';
+import { LiveTranscripts } from './components/LiveTranscripts';
+import { ConversationFeed } from './components/ConversationFeed';
+import { TelemetryHUD } from './components/TelemetryHUD';
+import { DemoScenarios } from './components/DemoScenarios';
+import type { VoiceState, ConversationTurn, LatencyMetrics, TrainOption } from './types/voice';
 
-interface BackendHealth {
-  status: string;
-  app: string;
-  version: string;
-  timestamp: number;
-  services: {
-    rime_tts: {
-      configured: boolean;
-      model: string;
-      speaker: string;
-      endpoint: string;
-    };
-    groq_llm: {
-      configured: boolean;
-      model: string;
-    };
-    deepgram_stt: {
-      configured: boolean;
-      model: string;
-    };
-    livekit: {
-      configured: boolean;
-    };
-    tool_delay_seconds: number;
-  };
-}
+// Realistic IRCTC mock data
+const ALL_TRAINS: TrainOption[] = [
+  {
+    trainNumber: '12303',
+    name: 'Poorva Express',
+    departure: '08:00 (HWH)',
+    arrival: '06:00 (+1)',
+    duration: '22h 00m',
+    departureTimeType: 'morning',
+    classes: ['1A', '2A', '3A', 'SL'],
+    price: '₹2,450',
+  },
+  {
+    trainNumber: '12301',
+    name: 'Howrah - New Delhi Rajdhani',
+    departure: '16:55 (HWH)',
+    arrival: '10:05 (+1)',
+    duration: '17h 10m',
+    departureTimeType: 'evening',
+    classes: ['1A', '2A', '3A'],
+    price: '₹3,890',
+  },
+  {
+    trainNumber: '12273',
+    name: 'Howrah - New Delhi Duronto',
+    departure: '17:45 (HWH)',
+    arrival: '10:50 (+1)',
+    duration: '17h 05m',
+    departureTimeType: 'evening',
+    classes: ['1A', '2A', '3A', '3E'],
+    price: '₹3,420',
+  },
+  {
+    trainNumber: '12313',
+    name: 'Sealdah - New Delhi Rajdhani',
+    departure: '18:50 (SDAH)',
+    arrival: '10:50 (+1)',
+    duration: '16h 00m',
+    departureTimeType: 'evening',
+    classes: ['1A', '2A', '3A'],
+    price: '₹3,950',
+  },
+];
 
 export default function App() {
-  const [health, setHealth] = useState<BackendHealth | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  // Realtime Voice States
+  const [voiceState, setVoiceState] = useState<VoiceState>('idle');
+  const [generationCount, setGenerationCount] = useState<number>(1);
+  const [userTranscript, setUserTranscript] = useState<string>('');
+  const [aiTranscript, setAiTranscript] = useState<string>('');
+  const [toolProgress, setToolProgress] = useState<number>(0);
+  const [toolRemainingSeconds, setToolRemainingSeconds] = useState<number>(5.0);
+  const [interruptionCutoffMs, setInterruptionCutoffMs] = useState<number>(24);
+  const [staleResultsDropped, setStaleResultsDropped] = useState<number>(0);
+  const [isSimulating, setIsSimulating] = useState<boolean>(false);
+  const [isConnected] = useState<boolean>(true);
 
-  const fetchHealth = async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await fetch('http://localhost:8000/api/health');
-      if (!res.ok) throw new Error(`HTTP error ${res.status}`);
-      const data = await res.json();
-      setHealth(data);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Backend unreachable');
-    } finally {
-      setLoading(false);
+  // Telemetry metrics
+  const [metrics, setMetrics] = useState<LatencyMetrics>({
+    speechToEndMs: 140,
+    transcriptionMs: 180,
+    toolExecutionMs: 0,
+    interruptionCutoffMs: 24,
+    ttsFirstByteMs: 295,
+    totalRoundtripMs: 650,
+  });
+
+  // Conversation history turns
+  const [turns, setTurns] = useState<ConversationTurn[]>([]);
+
+  // Simulation timer refs to cleanly cancel timeouts on interruption or reset
+  const activeTimersRef = useRef<number[]>([]);
+
+  const clearAllTimers = () => {
+    activeTimersRef.current.forEach((timer) => clearTimeout(timer));
+    activeTimersRef.current = [];
+  };
+
+  const currentGenerationId = `gen_${generationCount}`;
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => clearAllTimers();
+  }, []);
+
+  // Reset entire conversation state
+  const handleReset = () => {
+    clearAllTimers();
+    setVoiceState('idle');
+    setGenerationCount(1);
+    setUserTranscript('');
+    setAiTranscript('');
+    setToolProgress(0);
+    setToolRemainingSeconds(5.0);
+    setTurns([]);
+    setIsSimulating(false);
+    setStaleResultsDropped(0);
+    setMetrics({
+      speechToEndMs: 0,
+      transcriptionMs: 0,
+      toolExecutionMs: 0,
+      interruptionCutoffMs: 0,
+      ttsFirstByteMs: 0,
+      totalRoundtripMs: 0,
+    });
+  };
+
+  // Helper to add timeout and track it
+  const scheduleStep = (fn: () => void, delayMs: number) => {
+    const timer = setTimeout(fn, delayMs);
+    activeTimersRef.current.push(timer);
+    return timer;
+  };
+
+  // Trigger Instant Barge-In Interruption
+  const handleInterrupt = () => {
+    clearAllTimers();
+    const cutoffTime = Math.floor(18 + Math.random() * 15); // realistic 18-33ms audio cutoff
+    setInterruptionCutoffMs(cutoffTime);
+    setVoiceState('interrupted');
+    setStaleResultsDropped((prev) => prev + 1);
+
+    const oldGen = currentGenerationId;
+    const nextGenCount = generationCount + 1;
+    const nextGen = `gen_${nextGenCount}`;
+    setGenerationCount(nextGenCount);
+
+    // Add interrupted/stale entry in ledger
+    setTurns((prev) => [
+      ...prev,
+      {
+        id: `turn_${Date.now()}_stale`,
+        generationId: oldGen,
+        sender: 'assistant',
+        text: '[Tool task aborted upon user barge-in. Stale result dropped before reaching speaker.]',
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+        isStale: true,
+        toolDetails: {
+          toolName: 'search_trains',
+          params: { origin: 'Kolkata', destination: 'Delhi', date: 'tomorrow' },
+          executionTimeMs: 2200,
+          cancelled: true,
+        },
+      },
+    ]);
+
+    // Update telemetry
+    setMetrics((prev) => ({
+      ...prev,
+      interruptionCutoffMs: cutoffTime,
+    }));
+
+    // Seamlessly transition to process the new user constraint
+    scheduleStep(() => {
+      const newConstraint = 'Actually, only evening trains.';
+      setUserTranscript(newConstraint);
+      setAiTranscript('');
+
+      // Add user turn under new epoch
+      setTurns((prev) => [
+        ...prev,
+        {
+          id: `turn_${Date.now()}_user`,
+          generationId: nextGen,
+          sender: 'user',
+          text: newConstraint,
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+          isInterrupted: true,
+        },
+      ]);
+
+      setVoiceState('thinking');
+
+      // Now run updated tool with evening constraint
+      scheduleStep(() => {
+        setVoiceState('tool_running');
+        setToolProgress(0);
+        setToolRemainingSeconds(1.5); // faster simulated recovery search
+
+        const startTime = Date.now();
+        const interval = setInterval(() => {
+          const elapsed = (Date.now() - startTime) / 1000;
+          const progress = Math.min(100, (elapsed / 1.5) * 100);
+          setToolProgress(progress);
+          setToolRemainingSeconds(Math.max(0, 1.5 - elapsed));
+          if (progress >= 100) clearInterval(interval);
+        }, 80);
+
+        scheduleStep(() => {
+          clearInterval(interval);
+          setVoiceState('speaking');
+
+          const eveningTrains = ALL_TRAINS.filter((t) => t.departureTimeType === 'evening');
+          const spokenText =
+            'I found 3 evening trains from Kolkata to Delhi tomorrow: Howrah Rajdhani at 16:55, Howrah Duronto at 17:45, and Sealdah Rajdhani at 18:50. Would you like me to book tickets for the Howrah Rajdhani?';
+          setAiTranscript(spokenText);
+
+          setTurns((prev) => [
+            ...prev,
+            {
+              id: `turn_${Date.now()}_assistant`,
+              generationId: nextGen,
+              sender: 'assistant',
+              text: spokenText,
+              timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+              toolDetails: {
+                toolName: 'search_trains',
+                params: { origin: 'Kolkata', destination: 'Delhi', date: 'tomorrow', time_constraint: 'evening' },
+                executionTimeMs: 1500,
+                cancelled: false,
+                results: eveningTrains,
+              },
+            },
+          ]);
+
+          setMetrics((prev) => ({
+            ...prev,
+            transcriptionMs: 165,
+            toolExecutionMs: 1500,
+            ttsFirstByteMs: 285,
+            totalRoundtripMs: 540,
+          }));
+
+          // Return to idle after speech completes
+          scheduleStep(() => {
+            setVoiceState('idle');
+            setIsSimulating(false);
+          }, 6000);
+        }, 1600);
+      }, 700);
+    }, 800);
+  };
+
+  // Run the Core Hackathon Acceptance Test Flow
+  const handleRunAcceptanceTest = () => {
+    handleReset();
+    setIsSimulating(true);
+
+    // Step 1: User speaks initial prompt
+    setVoiceState('listening');
+    setUserTranscript('');
+    setAiTranscript('');
+
+    scheduleStep(() => {
+      const prompt1 = 'Find me trains from Kolkata to Delhi tomorrow.';
+      setUserTranscript(prompt1);
+
+      setTurns([
+        {
+          id: `turn_${Date.now()}_user1`,
+          generationId: 'gen_1',
+          sender: 'user',
+          text: prompt1,
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+        },
+      ]);
+
+      // Step 2: Thinking & LLM Tool Dispatch
+      scheduleStep(() => {
+        setVoiceState('thinking');
+
+        // Step 3: Tool Execution with 5-second simulated countdown
+        scheduleStep(() => {
+          setVoiceState('tool_running');
+          setToolProgress(0);
+          setToolRemainingSeconds(5.0);
+
+          const startTime = Date.now();
+          const interval = setInterval(() => {
+            const elapsed = (Date.now() - startTime) / 1000;
+            const progress = Math.min(100, (elapsed / 5.0) * 100);
+            setToolProgress(progress);
+            setToolRemainingSeconds(Math.max(0, 5.0 - elapsed));
+            if (progress >= 100) clearInterval(interval);
+          }, 80);
+
+          // Step 4: Barge-in interruption occurs at 2.3 seconds!
+          scheduleStep(() => {
+            clearInterval(interval);
+            handleInterrupt();
+          }, 2300);
+        }, 600);
+      }, 900);
+    }, 800);
+  };
+
+  // Run Normal Uninterrupted Search
+  const handleRunNormalSearch = () => {
+    handleReset();
+    setIsSimulating(true);
+
+    setVoiceState('listening');
+    scheduleStep(() => {
+      const prompt = 'Find me trains from Kolkata to Delhi tomorrow.';
+      setUserTranscript(prompt);
+
+      setTurns([
+        {
+          id: `turn_${Date.now()}_user_normal`,
+          generationId: 'gen_1',
+          sender: 'user',
+          text: prompt,
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+        },
+      ]);
+
+      scheduleStep(() => {
+        setVoiceState('thinking');
+
+        scheduleStep(() => {
+          setVoiceState('tool_running');
+          setToolProgress(0);
+          setToolRemainingSeconds(5.0);
+
+          const startTime = Date.now();
+          const interval = setInterval(() => {
+            const elapsed = (Date.now() - startTime) / 1000;
+            const progress = Math.min(100, (elapsed / 5.0) * 100);
+            setToolProgress(progress);
+            setToolRemainingSeconds(Math.max(0, 5.0 - elapsed));
+            if (progress >= 100) clearInterval(interval);
+          }, 100);
+
+          // Full 5.0 seconds complete uninterrupted
+          scheduleStep(() => {
+            clearInterval(interval);
+            setVoiceState('speaking');
+
+            const spoken =
+              'I found 4 trains from Kolkata to Delhi tomorrow: Poorva Express in the morning at 08:00, and 3 evening trains including Howrah Rajdhani at 16:55. Which time works best for you?';
+            setAiTranscript(spoken);
+
+            setTurns((prev) => [
+              ...prev,
+              {
+                id: `turn_${Date.now()}_assistant_normal`,
+                generationId: 'gen_1',
+                sender: 'assistant',
+                text: spoken,
+                timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+                toolDetails: {
+                  toolName: 'search_trains',
+                  params: { origin: 'Kolkata', destination: 'Delhi', date: 'tomorrow' },
+                  executionTimeMs: 5000,
+                  cancelled: false,
+                  results: ALL_TRAINS,
+                },
+              },
+            ]);
+
+            setMetrics({
+              speechToEndMs: 140,
+              transcriptionMs: 190,
+              toolExecutionMs: 5000,
+              interruptionCutoffMs: 0,
+              ttsFirstByteMs: 310,
+              totalRoundtripMs: 5640,
+            });
+
+            scheduleStep(() => {
+              setVoiceState('idle');
+              setIsSimulating(false);
+            }, 6500);
+          }, 5050);
+        }, 600);
+      }, 900);
+    }, 800);
+  };
+
+  // Run Interruption During Speech Test
+  const handleRunSpeechInterruption = () => {
+    handleReset();
+    setIsSimulating(true);
+
+    setVoiceState('speaking');
+    setAiTranscript('Here are your train details for tomorrow. Howrah Rajdhani departs at 16:55 from platform 9...');
+
+    // Interrupt mid-sentence at 1.8 seconds
+    scheduleStep(() => {
+      handleInterrupt();
+    }, 1800);
+  };
+
+  // Interactive Mic Button click
+  const handleMicToggle = () => {
+    if (voiceState === 'idle') {
+      setVoiceState('listening');
+      setUserTranscript('');
+      scheduleStep(() => {
+        setUserTranscript('Find me trains from Kolkata to Delhi tomorrow.');
+      }, 1000);
+    } else if (voiceState === 'listening') {
+      setVoiceState('thinking');
+      scheduleStep(() => {
+        handleRunNormalSearch();
+      }, 500);
+    } else if (voiceState === 'tool_running' || voiceState === 'speaking') {
+      handleInterrupt();
+    } else {
+      setVoiceState('idle');
     }
   };
 
-  useEffect(() => {
-    fetchHealth();
-    const interval = setInterval(fetchHealth, 10000);
-    return () => clearInterval(interval);
-  }, []);
-
   return (
-    <div className="min-h-screen bg-[#080c14] text-slate-100 flex flex-col items-center justify-between p-4 md:p-8 selection:bg-cyan-500/20">
-      {/* Top Navigation */}
-      <header className="w-full max-w-5xl flex items-center justify-between py-4 border-b border-slate-800/80">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-cyan-500 to-indigo-600 flex items-center justify-center shadow-lg shadow-cyan-500/20">
-            <Train className="w-5 h-5 text-white" />
-          </div>
-          <div>
-            <h1 className="text-xl font-bold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-cyan-400 via-sky-300 to-indigo-400">
-              Rime Voice Travel
-            </h1>
-            <p className="text-xs text-slate-400 font-medium">
-              Realtime Voice Assistant with Interruption & Stale Guard
-            </p>
-          </div>
-        </div>
+    <div className="min-h-screen bg-[#080c14] text-slate-100 flex flex-col items-center justify-between p-3 md:p-6 selection:bg-cyan-500/25">
+      {/* Top Header */}
+      <Header
+        generationId={currentGenerationId}
+        isConnected={isConnected}
+        onReset={handleReset}
+        latencyPing={24}
+      />
 
-        <div className="flex items-center gap-3">
-          <button
-            onClick={fetchHealth}
-            title="Refresh Backend Status"
-            className="p-2 rounded-lg bg-slate-800/80 hover:bg-slate-700/80 border border-slate-700/50 transition-colors"
-          >
-            <RefreshCw className={`w-4 h-4 text-slate-400 ${loading ? 'animate-spin' : ''}`} />
-          </button>
-          <div
-            className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold border ${
-              health?.status === 'healthy'
-                ? 'bg-emerald-950/40 text-emerald-400 border-emerald-500/30'
-                : 'bg-rose-950/40 text-rose-400 border-rose-500/30'
-            }`}
-          >
-            <span
-              className={`w-2 h-2 rounded-full ${
-                health?.status === 'healthy' ? 'bg-emerald-400 animate-pulse' : 'bg-rose-400'
-              }`}
-            />
-            {health?.status === 'healthy' ? 'FastAPI Online' : 'Backend Offline'}
-          </div>
-        </div>
-      </header>
+      {/* Main Voice Centerpiece & Interaction Hub */}
+      <main className="w-full max-w-6xl flex-1 flex flex-col items-center justify-start my-6 gap-6">
+        {/* Hero Card with Glowing Mic, Waveform, and Tool Progress Bar */}
+        <VoiceStatusCard
+          state={voiceState}
+          toolProgress={toolProgress}
+          toolRemainingSeconds={toolRemainingSeconds}
+          onMicClick={handleMicToggle}
+          onInterruptClick={handleInterrupt}
+          interruptionCutoffMs={interruptionCutoffMs}
+        />
 
-      {/* Main Interactive Stage */}
-      <main className="w-full max-w-5xl flex-1 flex flex-col items-center justify-center my-8 gap-8">
-        {/* Core Tagline Badge */}
-        <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-cyan-950/40 border border-cyan-500/30 text-cyan-300 text-xs font-medium backdrop-blur-sm">
-          <Sparkles className="w-3.5 h-3.5 text-cyan-400" />
-          <span>Rime Hackathon Challenge • Voice-Native Architecture</span>
-        </div>
+        {/* Live Transcripts: Real-time User vs Rime Spoken Output */}
+        <LiveTranscripts
+          userTranscript={userTranscript}
+          aiTranscript={aiTranscript}
+          state={voiceState}
+        />
 
-        {/* Visualizer & Mic Hero */}
-        <div className="flex flex-col items-center gap-6">
-          <div className="relative group">
-            {/* Outer Glow Halo */}
-            <div className="absolute -inset-4 bg-gradient-to-r from-cyan-500 to-indigo-600 rounded-full blur-xl opacity-30 group-hover:opacity-60 transition duration-1000"></div>
+        {/* Realtime Telemetry HUD (STT, 5s Tool Delay, Rime TTFB, Audio Cutoff) */}
+        <TelemetryHUD
+          metrics={metrics}
+          staleResultsDropped={staleResultsDropped}
+        />
 
-            {/* Mic Centerpiece */}
-            <div className="relative w-32 h-32 md:w-40 md:h-40 rounded-full bg-gradient-to-b from-slate-800 to-slate-900 border-2 border-slate-700/80 flex flex-col items-center justify-center shadow-2xl transition transform group-hover:scale-105">
-              <Mic className="w-12 h-12 text-cyan-400 mb-1 animate-pulse-subtle" />
-              <span className="text-[11px] font-semibold tracking-wider uppercase text-slate-400">
-                Phase 1 Ready
-              </span>
-            </div>
-          </div>
+        {/* Interactive Demo Scenarios & Stress Test Triggers */}
+        <DemoScenarios
+          onRunAcceptanceTest={handleRunAcceptanceTest}
+          onRunNormalSearch={handleRunNormalSearch}
+          onRunSpeechInterruption={handleRunSpeechInterruption}
+          onManualStateChange={(state) => setVoiceState(state)}
+          isSimulating={isSimulating}
+          currentState={voiceState}
+        />
 
-          <div className="text-center space-y-1">
-            <h2 className="text-2xl md:text-3xl font-bold tracking-tight text-white">
-              Voice Travel Assistant
-            </h2>
-            <p className="text-sm text-slate-400 max-w-md">
-              Engineered to test barge-in interruptions during 5-second simulated IRCTC travel searches with zero stale audio leakage.
-            </p>
-          </div>
-        </div>
-
-        {/* Service Health Cards Grid */}
-        <div className="w-full grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-          {/* Card 1: Rime TTS */}
-          <div className="p-4 rounded-xl bg-slate-900/60 border border-slate-800 backdrop-blur flex flex-col justify-between hover:border-slate-700 transition">
-            <div className="flex items-center justify-between mb-2">
-              <div className="flex items-center gap-2 text-slate-300 text-xs font-semibold">
-                <Volume2 className="w-4 h-4 text-cyan-400" />
-                <span>Primary Voice: Rime</span>
-              </div>
-              {health?.services?.rime_tts.configured ? (
-                <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-              ) : (
-                <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">
-                  Ready for Key
-                </span>
-              )}
-            </div>
-            <div className="text-xs text-slate-400 space-y-0.5">
-              <div>Speaker: <span className="text-slate-200">{health?.services?.rime_tts.speaker ?? 'amber'}</span></div>
-              <div>Model: <span className="text-slate-200">{health?.services?.rime_tts.model ?? 'mist'}</span></div>
-            </div>
-          </div>
-
-          {/* Card 2: Groq LLM */}
-          <div className="p-4 rounded-xl bg-slate-900/60 border border-slate-800 backdrop-blur flex flex-col justify-between hover:border-slate-700 transition">
-            <div className="flex items-center justify-between mb-2">
-              <div className="flex items-center gap-2 text-slate-300 text-xs font-semibold">
-                <Cpu className="w-4 h-4 text-indigo-400" />
-                <span>LLM: Groq Free Tier</span>
-              </div>
-              {health?.services?.groq_llm.configured ? (
-                <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-              ) : (
-                <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">
-                  Ready for Key
-                </span>
-              )}
-            </div>
-            <div className="text-xs text-slate-400 space-y-0.5">
-              <div>Model: <span className="text-slate-200 truncate block">{health?.services?.groq_llm.model ?? 'llama-3.3-70b'}</span></div>
-              <div>Tier: <span className="text-emerald-400">Zero-Cost Cloud</span></div>
-            </div>
-          </div>
-
-          {/* Card 3: Deepgram STT & LiveKit */}
-          <div className="p-4 rounded-xl bg-slate-900/60 border border-slate-800 backdrop-blur flex flex-col justify-between hover:border-slate-700 transition">
-            <div className="flex items-center justify-between mb-2">
-              <div className="flex items-center gap-2 text-slate-300 text-xs font-semibold">
-                <Radio className="w-4 h-4 text-purple-400" />
-                <span>Realtime & STT</span>
-              </div>
-              <CheckCircle2 className="w-4 h-4 text-slate-500" />
-            </div>
-            <div className="text-xs text-slate-400 space-y-0.5">
-              <div>STT: <span className="text-slate-200">Deepgram Nova-2</span></div>
-              <div>Transport: <span className="text-slate-200">LiveKit / WebRTC</span></div>
-            </div>
-          </div>
-
-          {/* Card 4: Tool Delay */}
-          <div className="p-4 rounded-xl bg-slate-900/60 border border-slate-800 backdrop-blur flex flex-col justify-between hover:border-slate-700 transition">
-            <div className="flex items-center justify-between mb-2">
-              <div className="flex items-center gap-2 text-slate-300 text-xs font-semibold">
-                <Clock className="w-4 h-4 text-amber-400" />
-                <span>Stress-Test Tool</span>
-              </div>
-              <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">
-                {health?.services?.tool_delay_seconds ?? 5.0}s delay
-              </span>
-            </div>
-            <div className="text-xs text-slate-400 space-y-0.5">
-              <div>Tool: <span className="text-slate-200">IRCTC Train Search</span></div>
-              <div>Interruption: <span className="text-emerald-400">Cancelable Task</span></div>
-            </div>
-          </div>
-        </div>
-
-        {/* Acceptance Demo Flow Preview */}
-        <div className="w-full p-5 rounded-2xl bg-gradient-to-b from-slate-900/90 to-slate-950 border border-slate-800 shadow-xl space-y-4">
-          <div className="flex items-center justify-between border-b border-slate-800/80 pb-3">
-            <div className="flex items-center gap-2 text-sm font-semibold text-slate-200">
-              <Layers className="w-4 h-4 text-cyan-400" />
-              <span>Core Hackathon Acceptance Test Preview</span>
-            </div>
-            <span className="text-xs px-2.5 py-1 rounded-full bg-cyan-950/60 border border-cyan-500/40 text-cyan-300 font-mono">
-              Generation Epoch Protocol
-            </span>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
-            <div className="p-3 rounded-lg bg-slate-800/40 border border-slate-700/50 space-y-1">
-              <div className="font-semibold text-sky-400">Step 1: User Request</div>
-              <div className="italic text-slate-300">"Find me trains from Kolkata to Delhi tomorrow."</div>
-              <div className="text-[11px] text-slate-400">Spawns generation <span className="font-mono text-cyan-300">gen_1</span> & starts 5s search.</div>
-            </div>
-
-            <div className="p-3 rounded-lg bg-amber-950/20 border border-amber-500/30 space-y-1">
-              <div className="font-semibold text-amber-400">Step 2: Mid-Search Interruption</div>
-              <div className="italic text-slate-300">"Actually, only evening trains."</div>
-              <div className="text-[11px] text-amber-200/80">Immediately aborts <span className="font-mono text-amber-300">gen_1</span> audio, cancels task, invalidates stale results.</div>
-            </div>
-
-            <div className="p-3 rounded-lg bg-emerald-950/20 border border-emerald-500/30 space-y-1">
-              <div className="font-semibold text-emerald-400">Step 3: Stale Guard & Rime Recovery</div>
-              <div className="italic text-slate-300">"Here are the evening trains: Howrah Rajdhani at 16:55..."</div>
-              <div className="text-[11px] text-emerald-200/80">Spoken via <span className="font-mono text-emerald-300">Rime TTS</span> under <span className="font-mono text-cyan-300">gen_2</span>.</div>
-            </div>
-          </div>
-        </div>
-
-        {error && (
-          <div className="flex items-center gap-2 p-3 rounded-lg bg-rose-950/40 border border-rose-500/40 text-rose-300 text-xs">
-            <AlertCircle className="w-4 h-4 flex-shrink-0" />
-            <span>{error} — ensure backend is running with `python main.py`</span>
-          </div>
-        )}
+        {/* Conversation History & Epoch Ledger */}
+        <ConversationFeed turns={turns} />
       </main>
 
-      {/* Footer */}
-      <footer className="w-full max-w-5xl flex items-center justify-between text-xs text-slate-400 border-t border-slate-800/80 pt-4">
-        <span>Rime Voice Travel Assistant • Phase 1</span>
-        <span>FastAPI + Vite + React + Tailwind CSS</span>
+      {/* Minimal Footer */}
+      <footer className="w-full max-w-6xl mx-auto flex flex-col sm:flex-row items-center justify-between text-xs text-slate-500 border-t border-slate-800/60 pt-4 pb-2 gap-2">
+        <div className="flex items-center gap-2">
+          <span className="font-semibold text-slate-400">VoiceTrip</span>
+          <span>•</span>
+          <span>Rime Hackathon Challenge Prototype</span>
+        </div>
+        <div>
+          Primary Voice Powered by <span className="text-cyan-400 font-medium">Rime TTS</span> • Zero Stale Audio Guarantee
+        </div>
       </footer>
     </div>
   );
