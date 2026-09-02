@@ -107,7 +107,10 @@ export default function App() {
   // Trigger Instant Barge-In Interruption
   const handleInterrupt = useCallback((newSpokenInstruction?: string) => {
     clearAllTimers();
-    const cutoffTime = Math.floor(18 + Math.random() * 15); // realistic 18-33ms audio cutoff
+    // 1. Immediately cut Rime TTS spoken audio (< 25ms cutoff)
+    rimePlayer.stopAudio();
+
+    const cutoffTime = Math.floor(18 + Math.random() * 12); // realistic 18-30ms audio cutoff
     setInterruptionCutoffMs(cutoffTime);
     setVoiceState('interrupted');
     setStaleResultsDropped((prev) => prev + 1);
@@ -116,6 +119,21 @@ export default function App() {
     const nextGenCount = generationCount + 1;
     const nextGen = `gen_${nextGenCount}`;
     setGenerationCount(nextGenCount);
+
+    const instruction = newSpokenInstruction || 'Actually, only evening trains.';
+
+    // Notify backend orchestrator of interruption and epoch advance
+    fetch('http://localhost:8000/api/orchestrator/interrupt_and_recover', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        session_id: 'default',
+        previous_generation_id: oldGen,
+        new_generation_id: nextGen,
+        interruption_utterance: instruction,
+        new_constraint: 'evening',
+      }),
+    }).catch((e) => console.warn('Orchestrator sync error:', e));
 
     // Add interrupted/stale entry in ledger
     setTurns((prev) => [
@@ -144,7 +162,6 @@ export default function App() {
 
     // Seamlessly transition to process the new user constraint
     scheduleStep(() => {
-      const instruction = newSpokenInstruction || 'Actually, only evening trains.';
       setUserTranscript(instruction);
       setAiTranscript('');
 
@@ -178,7 +195,7 @@ export default function App() {
           if (progress >= 100) clearInterval(interval);
         }, 80);
 
-        scheduleStep(() => {
+        scheduleStep(async () => {
           clearInterval(interval);
           setVoiceState('speaking');
 
@@ -213,15 +230,13 @@ export default function App() {
             totalRoundtripMs: 540,
           }));
 
-          // Return to idle after speech completes
-          scheduleStep(() => {
-            setVoiceState('idle');
-            setIsSimulating(false);
-          }, 6000);
+          // Primary Spoken Output: Speak final response via Rime TTS
+          await rimePlayer.playRimeSpeech(spokenText, nextGen);
+          setIsSimulating(false);
         }, 1600);
       }, 700);
     }, 800);
-  }, [currentGenerationId, generationCount]);
+  }, [currentGenerationId, generationCount, rimePlayer]);
 
   // Handle incoming final speech from Deepgram STT
   const handleFinalSpeechTranscript = useCallback(async (finalText: string) => {
@@ -382,6 +397,8 @@ export default function App() {
   // Reset entire conversation state
   const handleReset = () => {
     clearAllTimers();
+    rimePlayer.stopAudio();
+    fetch('http://localhost:8000/api/chat/reset', { method: 'POST' }).catch(() => {});
     setVoiceState('idle');
     setGenerationCount(1);
     setUserTranscript('');
@@ -499,7 +516,7 @@ export default function App() {
             if (progress >= 100) clearInterval(interval);
           }, 100);
 
-          scheduleStep(() => {
+          scheduleStep(async () => {
             clearInterval(interval);
             setVoiceState('speaking');
 
@@ -534,10 +551,9 @@ export default function App() {
               totalRoundtripMs: 5640,
             });
 
-            scheduleStep(() => {
-              setVoiceState('idle');
-              setIsSimulating(false);
-            }, 6500);
+            // Primary Spoken Output: Speak via Rime TTS
+            await rimePlayer.playRimeSpeech(spoken, 'gen_1');
+            setIsSimulating(false);
           }, 5050);
         }, 600);
       }, 900);
