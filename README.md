@@ -175,6 +175,11 @@ All secrets stay strictly on the backend. No credentials are leaked to the clien
 | `LIVEKIT_URL` | LiveKit Cloud WebSocket URL | `wss://your-project.livekit.cloud` |
 | `LIVEKIT_API_KEY` | LiveKit project key | `your_livekit_api_key_here` |
 | `LIVEKIT_API_SECRET` | LiveKit project secret | `your_livekit_api_secret_here` |
+| `SUPABASE_URL` | Supabase project URL (optional persistence) | `https://your-project.supabase.co` |
+| `SUPABASE_PUBLISHABLE_KEY` | Supabase publishable key (client & server safe) | `your_supabase_publishable_key_here` |
+| `SUPABASE_SECRET_KEY` | Supabase secret key (**SERVER-SIDE ONLY**, never client-facing) | `your_supabase_secret_key_here` |
+| `VITE_SUPABASE_URL` | Frontend Vite Supabase URL (optional) | `https://your-project.supabase.co` |
+| `VITE_SUPABASE_PUBLISHABLE_KEY` | Frontend Vite publishable key (client-safe) | `your_supabase_publishable_key_here` |
 | `TOOL_ARTIFICIAL_DELAY_SECONDS` | Intentional tool latency for stress testing | `5.0` |
 
 ---
@@ -209,6 +214,7 @@ payload = {
 2. **[Groq](https://groq.com)**: Ultra-fast Llama 3.3 70B inference on free tier for low-latency voice reasoning.
 3. **[Deepgram](https://deepgram.com)**: Streaming speech-to-text with interim word detection and endpointing.
 4. **[LiveKit](https://livekit.io)**: WebRTC audio infrastructure for browser microphone streaming.
+5. **[Supabase](https://supabase.com)**: Optional PostgreSQL database for session persistence, utilizing the modern Publishable Key (`SUPABASE_PUBLISHABLE_KEY`) and strictly server-side Secret Key (`SUPABASE_SECRET_KEY`) format.
 
 ---
 

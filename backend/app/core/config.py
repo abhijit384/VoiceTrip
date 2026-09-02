@@ -36,10 +36,10 @@ class Settings(BaseSettings):
     LIVEKIT_API_KEY: Optional[str] = None
     LIVEKIT_API_SECRET: Optional[str] = None
 
-    # Supabase (Optional)
+    # Supabase (Optional for persistence)
     SUPABASE_URL: Optional[str] = None
-    SUPABASE_ANON_KEY: Optional[str] = None
-    SUPABASE_SERVICE_ROLE_KEY: Optional[str] = None
+    SUPABASE_PUBLISHABLE_KEY: Optional[str] = None
+    SUPABASE_SECRET_KEY: Optional[str] = None
 
     # Simulation / Tool Stress Test
     TOOL_ARTIFICIAL_DELAY_SECONDS: float = 5.0
