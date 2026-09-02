@@ -7,6 +7,7 @@ import { TelemetryHUD } from './components/TelemetryHUD';
 import { DemoScenarios } from './components/DemoScenarios';
 import { useLiveKitSession } from './hooks/useLiveKitSession';
 import { useRealtimeSTT } from './hooks/useRealtimeSTT';
+import { useRimeAudioPlayer } from './hooks/useRimeAudioPlayer';
 import type { VoiceState, ConversationTurn, LatencyMetrics, TrainOption } from './types/voice';
 
 // Realistic IRCTC mock data
@@ -56,6 +57,11 @@ const ALL_TRAINS: TrainOption[] = [
 export default function App() {
   // LiveKit Realtime Session Hook (Microphone + Audio track)
   const livekit = useLiveKitSession();
+
+  // Rime TTS Spoken Audio Player
+  const rimePlayer = useRimeAudioPlayer(() => {
+    setVoiceState('idle');
+  });
 
   // Realtime Voice States
   const [voiceState, setVoiceState] = useState<VoiceState>('idle');
@@ -273,7 +279,8 @@ export default function App() {
             timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
           },
         ]);
-        setVoiceState('idle');
+        setVoiceState('speaking');
+        await rimePlayer.playRimeSpeech(data.text, currentGenerationId);
       } else if (data.response_type === 'tool_call') {
         const toolCall = data.tool_calls[0];
         const args = toolCall?.arguments || {};
@@ -332,18 +339,21 @@ export default function App() {
                 },
               },
             ]);
+
+            // Primary Spoken Output: Speak via Rime TTS
+            setVoiceState('speaking');
+            await rimePlayer.playRimeSpeech(spoken, currentGenerationId);
           } catch (e) {
             console.warn('Tool synthesis error:', e);
+            setVoiceState('idle');
           }
-
-          setVoiceState('idle');
         }, 5050);
       }
     } catch (err) {
       console.error('Chat endpoint error:', err);
       setVoiceState('idle');
     }
-  }, [voiceState, handleInterrupt, currentGenerationId]);
+  }, [voiceState, handleInterrupt, currentGenerationId, rimePlayer]);
 
   // Deepgram Realtime STT Hook
   const stt = useRealtimeSTT(

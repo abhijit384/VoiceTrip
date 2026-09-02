@@ -8,6 +8,7 @@ from app.api.livekit_token import router as livekit_router
 from app.api.websocket_hub import router as ws_router
 from app.api.session import router as session_router
 from app.api.tool import router as tool_router
+from app.api.tts import router as tts_router
 
 logging.basicConfig(
     level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO),
@@ -49,6 +50,7 @@ app.include_router(livekit_router, prefix="/api")
 app.include_router(ws_router, prefix="/api")
 app.include_router(session_router, prefix="/api")
 app.include_router(tool_router, prefix="/api")
+app.include_router(tts_router, prefix="/api")
 
 
 @app.get("/")

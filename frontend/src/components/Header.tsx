@@ -70,6 +70,13 @@ export const Header: FC<HeaderProps> = ({
 
       {/* Status Badges & Controls */}
       <div className="flex flex-wrap items-center gap-2.5 w-full sm:w-auto justify-end">
+        {/* Rime TTS Active Voice Provider Badge */}
+        <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-violet-950/50 border border-violet-500/40 text-xs font-semibold text-violet-200 shadow-sm shadow-violet-900/20">
+          <span className="w-2 h-2 rounded-full bg-violet-400 animate-pulse"></span>
+          <span className="text-[10px] text-violet-400 font-sans uppercase font-bold">Primary Voice:</span>
+          <span className="text-violet-100 font-medium">Rime (Amber • Mist)</span>
+        </div>
+
         {/* Generation Epoch Badge */}
         <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-900/90 border border-slate-800 text-xs font-mono text-slate-300">
           <ShieldCheck className="w-3.5 h-3.5 text-cyan-400" />
