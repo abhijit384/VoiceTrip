@@ -19,6 +19,7 @@ interface LiveKitSessionState {
   participantId: string | null;
   isCloudConfigured: boolean;
   errorMessage: string | null;
+  mediaStream: MediaStream | null;
 }
 
 export function useLiveKitSession() {
@@ -31,6 +32,7 @@ export function useLiveKitSession() {
     participantId: null,
     isCloudConfigured: false,
     errorMessage: null,
+    mediaStream: null,
   });
 
   const roomRef = useRef<Room | null>(null);
@@ -114,6 +116,7 @@ export function useLiveKitSession() {
       isMicActive: false,
       micVolume: 0,
       errorMessage: null,
+      mediaStream: null,
     }));
   }, [stopVolumeAnalysis]);
 
@@ -151,7 +154,7 @@ export function useLiveKitSession() {
           },
         });
         streamRef.current = localStream;
-        setState((prev) => ({ ...prev, micPermission: 'granted', isMicActive: true }));
+        setState((prev) => ({ ...prev, micPermission: 'granted', isMicActive: true, mediaStream: localStream }));
         startVolumeAnalysis(localStream);
       } catch (err: unknown) {
         const error = err as Error;
@@ -289,6 +292,7 @@ export function useLiveKitSession() {
     participantId: state.participantId,
     isCloudConfigured: state.isCloudConfigured,
     errorMessage: state.errorMessage,
+    mediaStream: state.mediaStream,
     connect,
     disconnect,
     toggleMic,

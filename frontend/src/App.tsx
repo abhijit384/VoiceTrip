@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { Header } from './components/Header';
 import { VoiceStatusCard } from './components/VoiceStatusCard';
 import { LiveTranscripts } from './components/LiveTranscripts';
@@ -6,6 +6,7 @@ import { ConversationFeed } from './components/ConversationFeed';
 import { TelemetryHUD } from './components/TelemetryHUD';
 import { DemoScenarios } from './components/DemoScenarios';
 import { useLiveKitSession } from './hooks/useLiveKitSession';
+import { useRealtimeSTT } from './hooks/useRealtimeSTT';
 import type { VoiceState, ConversationTurn, LatencyMetrics, TrainOption } from './types/voice';
 
 // Realistic IRCTC mock data
@@ -53,7 +54,7 @@ const ALL_TRAINS: TrainOption[] = [
 ];
 
 export default function App() {
-  // LiveKit Realtime Session Hook
+  // LiveKit Realtime Session Hook (Microphone + Audio track)
   const livekit = useLiveKitSession();
 
   // Realtime Voice States
@@ -90,33 +91,6 @@ export default function App() {
 
   const currentGenerationId = `gen_${generationCount}`;
 
-  // Cleanup on unmount
-  useEffect(() => {
-    return () => clearAllTimers();
-  }, []);
-
-  // Reset entire conversation state
-  const handleReset = () => {
-    clearAllTimers();
-    setVoiceState('idle');
-    setGenerationCount(1);
-    setUserTranscript('');
-    setAiTranscript('');
-    setToolProgress(0);
-    setToolRemainingSeconds(5.0);
-    setTurns([]);
-    setIsSimulating(false);
-    setStaleResultsDropped(0);
-    setMetrics({
-      speechToEndMs: 0,
-      transcriptionMs: 0,
-      toolExecutionMs: 0,
-      interruptionCutoffMs: 0,
-      ttsFirstByteMs: 0,
-      totalRoundtripMs: 0,
-    });
-  };
-
   // Helper to add timeout and track it
   const scheduleStep = (fn: () => void, delayMs: number) => {
     const timer = setTimeout(fn, delayMs);
@@ -125,7 +99,7 @@ export default function App() {
   };
 
   // Trigger Instant Barge-In Interruption
-  const handleInterrupt = () => {
+  const handleInterrupt = useCallback((newSpokenInstruction?: string) => {
     clearAllTimers();
     const cutoffTime = Math.floor(18 + Math.random() * 15); // realistic 18-33ms audio cutoff
     setInterruptionCutoffMs(cutoffTime);
@@ -164,8 +138,8 @@ export default function App() {
 
     // Seamlessly transition to process the new user constraint
     scheduleStep(() => {
-      const newConstraint = 'Actually, only evening trains.';
-      setUserTranscript(newConstraint);
+      const instruction = newSpokenInstruction || 'Actually, only evening trains.';
+      setUserTranscript(instruction);
       setAiTranscript('');
 
       // Add user turn under new epoch
@@ -175,7 +149,7 @@ export default function App() {
           id: `turn_${Date.now()}_user`,
           generationId: nextGen,
           sender: 'user',
-          text: newConstraint,
+          text: instruction,
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
           isInterrupted: true,
         },
@@ -183,7 +157,7 @@ export default function App() {
 
       setVoiceState('thinking');
 
-      // Now run updated tool with evening constraint
+      // Run updated tool with evening constraint
       scheduleStep(() => {
         setVoiceState('tool_running');
         setToolProgress(0);
@@ -241,6 +215,124 @@ export default function App() {
         }, 1600);
       }, 700);
     }, 800);
+  }, [currentGenerationId, generationCount]);
+
+  // Handle incoming final speech from Deepgram STT
+  const handleFinalSpeechTranscript = useCallback((finalText: string) => {
+    setUserTranscript(finalText);
+
+    // If tool is running or AI is speaking, user speech triggers interruption!
+    if (voiceState === 'tool_running' || voiceState === 'speaking') {
+      console.log('Real speech barge-in detected during active tool/speech:', finalText);
+      handleInterrupt(finalText);
+      return;
+    }
+
+    // Otherwise standard user request flow
+    setVoiceState('thinking');
+    setTurns((prev) => [
+      ...prev,
+      {
+        id: `turn_${Date.now()}_user_real`,
+        generationId: currentGenerationId,
+        sender: 'user',
+        text: finalText,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+      },
+    ]);
+
+    // Transition to 5-second travel tool execution
+    scheduleStep(() => {
+      setVoiceState('tool_running');
+      setToolProgress(0);
+      setToolRemainingSeconds(5.0);
+
+      const startTime = Date.now();
+      const interval = setInterval(() => {
+        const elapsed = (Date.now() - startTime) / 1000;
+        const progress = Math.min(100, (elapsed / 5.0) * 100);
+        setToolProgress(progress);
+        setToolRemainingSeconds(Math.max(0, 5.0 - elapsed));
+        if (progress >= 100) clearInterval(interval);
+      }, 80);
+
+      scheduleStep(() => {
+        clearInterval(interval);
+        setVoiceState('speaking');
+
+        const spoken =
+          'I found 4 trains from Kolkata to Delhi tomorrow: Poorva Express in the morning at 08:00, and 3 evening trains including Howrah Rajdhani at 16:55. Which time works best for you?';
+        setAiTranscript(spoken);
+
+        setTurns((prev) => [
+          ...prev,
+          {
+            id: `turn_${Date.now()}_assistant_normal`,
+            generationId: currentGenerationId,
+            sender: 'assistant',
+            text: spoken,
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+            toolDetails: {
+              toolName: 'search_trains',
+              params: { origin: 'Kolkata', destination: 'Delhi', date: 'tomorrow' },
+              executionTimeMs: 5000,
+              cancelled: false,
+              results: ALL_TRAINS,
+            },
+          },
+        ]);
+
+        scheduleStep(() => {
+          setVoiceState('idle');
+        }, 6500);
+      }, 5050);
+    }, 800);
+  }, [voiceState, handleInterrupt, currentGenerationId]);
+
+  // Deepgram Realtime STT Hook
+  const stt = useRealtimeSTT(
+    livekit.mediaStream,
+    livekit.isMicActive,
+    handleFinalSpeechTranscript
+  );
+
+  // When live partial transcript arrives, update voiceState to listening if idle
+  useEffect(() => {
+    if (stt.partialTranscript) {
+      if (voiceState === 'idle') {
+        setVoiceState('listening');
+      }
+      if (stt.latencyMs > 0) {
+        setMetrics((prev) => ({ ...prev, transcriptionMs: stt.latencyMs }));
+      }
+    }
+  }, [stt.partialTranscript, voiceState, stt.latencyMs]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => clearAllTimers();
+  }, []);
+
+  // Reset entire conversation state
+  const handleReset = () => {
+    clearAllTimers();
+    setVoiceState('idle');
+    setGenerationCount(1);
+    setUserTranscript('');
+    setAiTranscript('');
+    setToolProgress(0);
+    setToolRemainingSeconds(5.0);
+    setTurns([]);
+    setIsSimulating(false);
+    setStaleResultsDropped(0);
+    setMetrics({
+      speechToEndMs: 0,
+      transcriptionMs: 0,
+      toolExecutionMs: 0,
+      interruptionCutoffMs: 0,
+      ttsFirstByteMs: 0,
+      totalRoundtripMs: 0,
+    });
   };
 
   // Run the Core Hackathon Acceptance Test Flow
@@ -248,7 +340,6 @@ export default function App() {
     handleReset();
     setIsSimulating(true);
 
-    // Auto-connect microphone if not connected
     if (livekit.status !== 'connected') {
       livekit.connect();
     }
@@ -342,7 +433,6 @@ export default function App() {
             if (progress >= 100) clearInterval(interval);
           }, 100);
 
-          // Full 5.0 seconds complete uninterrupted
           scheduleStep(() => {
             clearInterval(interval);
             setVoiceState('speaking');
@@ -408,7 +498,6 @@ export default function App() {
 
   // Interactive Center Button click
   const handleCenterClick = () => {
-    // If not connected, connect LiveKit session first to request microphone
     if (livekit.status !== 'connected') {
       livekit.connect();
       return;
@@ -417,9 +506,6 @@ export default function App() {
     if (voiceState === 'idle') {
       setVoiceState('listening');
       setUserTranscript('');
-      scheduleStep(() => {
-        setUserTranscript('Find me trains from Kolkata to Delhi tomorrow.');
-      }, 1000);
     } else if (voiceState === 'listening') {
       setVoiceState('thinking');
       scheduleStep(() => {
@@ -458,22 +544,28 @@ export default function App() {
           toolRemainingSeconds={toolRemainingSeconds}
           interruptionCutoffMs={interruptionCutoffMs}
           onMicClick={handleCenterClick}
-          onInterruptClick={handleInterrupt}
+          onInterruptClick={() => handleInterrupt()}
           onToggleMicMute={livekit.toggleMic}
           onConnect={() => livekit.connect()}
-          errorMessage={livekit.errorMessage}
+          errorMessage={livekit.errorMessage || stt.error}
         />
 
         {/* Live Transcripts: Real-time User vs Rime Spoken Output */}
         <LiveTranscripts
-          userTranscript={userTranscript}
+          userTranscript={userTranscript || stt.finalTranscript}
+          partialTranscript={stt.partialTranscript}
           aiTranscript={aiTranscript}
           state={voiceState}
+          isStreaming={stt.isStreaming}
+          sttProvider={stt.sttProvider}
         />
 
-        {/* Realtime Telemetry HUD (STT, 5s Tool Delay, Rime TTFB, Audio Cutoff) */}
+        {/* Realtime Telemetry HUD (STT Latency, 5s Tool Delay, Rime TTFB, Audio Cutoff) */}
         <TelemetryHUD
-          metrics={metrics}
+          metrics={{
+            ...metrics,
+            transcriptionMs: stt.latencyMs > 0 ? stt.latencyMs : metrics.transcriptionMs,
+          }}
           staleResultsDropped={staleResultsDropped}
         />
 
@@ -496,7 +588,7 @@ export default function App() {
         <div className="flex items-center gap-2">
           <span className="font-semibold text-slate-400">VoiceTrip</span>
           <span>•</span>
-          <span>LiveKit Realtime Transport Active</span>
+          <span>Realtime STT via Deepgram Nova-2</span>
         </div>
         <div>
           Primary Voice Powered by <span className="text-cyan-400 font-medium">Rime TTS</span> • Zero Stale Audio Guarantee
