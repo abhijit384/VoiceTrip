@@ -7,6 +7,7 @@ from app.api.health import router as health_router
 from app.api.livekit_token import router as livekit_router
 from app.api.websocket_hub import router as ws_router
 from app.api.session import router as session_router
+from app.api.tool import router as tool_router
 
 logging.basicConfig(
     level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO),
@@ -47,6 +48,7 @@ app.include_router(health_router, prefix="/api")
 app.include_router(livekit_router, prefix="/api")
 app.include_router(ws_router, prefix="/api")
 app.include_router(session_router, prefix="/api")
+app.include_router(tool_router, prefix="/api")
 
 
 @app.get("/")
