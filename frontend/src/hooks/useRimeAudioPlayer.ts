@@ -21,6 +21,8 @@ export function useRimeAudioPlayer(onPlaybackEnded?: () => void) {
 
   const audioElementRef = useRef<HTMLAudioElement | null>(null);
   const currentBlobUrlRef = useRef<string | null>(null);
+  const onPlaybackEndedRef = useRef(onPlaybackEnded);
+  onPlaybackEndedRef.current = onPlaybackEnded;
 
   // Stop currently playing audio immediately
   const stopAudio = useCallback(() => {
@@ -33,7 +35,7 @@ export function useRimeAudioPlayer(onPlaybackEnded?: () => void) {
       URL.revokeObjectURL(currentBlobUrlRef.current);
       currentBlobUrlRef.current = null;
     }
-    setState((prev) => ({ ...prev, isPlaying: false }));
+    setState((prev) => (prev.isPlaying ? { ...prev, isPlaying: false } : prev));
   }, []);
 
   // Synthesize text with Rime TTS and play through browser audio
@@ -91,12 +93,13 @@ export function useRimeAudioPlayer(onPlaybackEnded?: () => void) {
             URL.revokeObjectURL(currentBlobUrlRef.current);
             currentBlobUrlRef.current = null;
           }
-          if (onPlaybackEnded) {
-            onPlaybackEnded();
+          if (onPlaybackEndedRef.current) {
+            onPlaybackEndedRef.current();
           }
         };
 
         audio.onerror = (e) => {
+          if (!audio.src || audio.src === window.location.href || audio.src === '') return;
           console.error('Audio playback error:', e);
           setState((prev) => ({ ...prev, isPlaying: false, error: 'Audio playback failed' }));
         };
@@ -114,7 +117,7 @@ export function useRimeAudioPlayer(onPlaybackEnded?: () => void) {
         return 0;
       }
     },
-    [stopAudio, onPlaybackEnded]
+    [stopAudio]
   );
 
   // Fetch Rime engine info on mount
@@ -131,9 +134,15 @@ export function useRimeAudioPlayer(onPlaybackEnded?: () => void) {
       .catch((e) => console.warn('Could not fetch Rime info:', e));
 
     return () => {
-      stopAudio();
+      if (audioElementRef.current) {
+        audioElementRef.current.pause();
+        audioElementRef.current.src = '';
+      }
+      if (currentBlobUrlRef.current) {
+        URL.revokeObjectURL(currentBlobUrlRef.current);
+      }
     };
-  }, [stopAudio]);
+  }, []);
 
   return {
     isPlaying: state.isPlaying,

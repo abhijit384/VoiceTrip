@@ -60,6 +60,8 @@ export function useRealtimeSTT(
   const speechRecRef = useRef<SpeechRecognitionInstance | null>(null);
   const speechStartTimeRef = useRef<number>(0);
   const reconnectTimeoutRef = useRef<number | null>(null);
+  const onFinalTranscriptRef = useRef(onFinalTranscript);
+  onFinalTranscriptRef.current = onFinalTranscript;
 
   // Connect to backend WebSocket hub
   const connectWebSocket = useCallback(() => {
@@ -68,7 +70,8 @@ export function useRealtimeSTT(
     }
 
     try {
-      const wsUrl = 'ws://localhost:8000/api/ws/stt';
+      const host = typeof window !== 'undefined' ? window.location.hostname || '127.0.0.1' : '127.0.0.1';
+      const wsUrl = `ws://${host}:8000/api/ws/stt`;
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
 
@@ -99,8 +102,8 @@ export function useRealtimeSTT(
               latencyMs: latency,
             }));
 
-            if (isFinal && text.trim().length > 0 && onFinalTranscript) {
-              onFinalTranscript(text.trim());
+            if (isFinal && text.trim().length > 0 && onFinalTranscriptRef.current) {
+              onFinalTranscriptRef.current(text.trim());
             }
           } else if (data.type === 'stt_error') {
             setState((prev) => ({ ...prev, error: data.error }));
@@ -110,22 +113,24 @@ export function useRealtimeSTT(
         }
       };
 
-      ws.onerror = (err) => {
-        console.warn('STT WebSocket error:', err);
-        setState((prev) => ({ ...prev, error: 'STT connection interrupted' }));
+      ws.onerror = () => {
+        // Log once without state oscillation
+        setState((prev) => (prev.error === 'STT offline' ? prev : { ...prev, error: 'STT offline' }));
       };
 
       ws.onclose = () => {
-        console.log('STT WebSocket closed; scheduling reconnect...');
         wsRef.current = null;
-        reconnectTimeoutRef.current = window.setTimeout(() => {
-          connectWebSocket();
-        }, 2500);
+        if (!reconnectTimeoutRef.current) {
+          reconnectTimeoutRef.current = window.setTimeout(() => {
+            reconnectTimeoutRef.current = null;
+            connectWebSocket();
+          }, 4000);
+        }
       };
     } catch (e) {
       console.warn('Could not establish STT WebSocket:', e);
     }
-  }, [onFinalTranscript]);
+  }, []);
 
   // Start audio streaming to backend
   const startAudioStreaming = useCallback(() => {
@@ -212,11 +217,11 @@ export function useRealtimeSTT(
         console.warn('SpeechRecognition initialization error:', speechErr);
       }
     }
-  }, [mediaStream, onFinalTranscript]);
+  }, [mediaStream]);
 
   // Stop audio streaming
   const stopAudioStreaming = useCallback(() => {
-    setState((prev) => ({ ...prev, isStreaming: false }));
+    setState((prev) => (prev.isStreaming ? { ...prev, isStreaming: false } : prev));
 
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
       mediaRecorderRef.current.stop();
@@ -242,9 +247,18 @@ export function useRealtimeSTT(
         wsRef.current.close();
         wsRef.current = null;
       }
-      stopAudioStreaming();
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+        mediaRecorderRef.current.stop();
+        mediaRecorderRef.current = null;
+      }
+      if (speechRecRef.current) {
+        try {
+          speechRecRef.current.stop();
+        } catch {}
+        speechRecRef.current = null;
+      }
     };
-  }, [connectWebSocket, stopAudioStreaming]);
+  }, [connectWebSocket]);
 
   // Start or stop streaming based on mic active status
   useEffect(() => {

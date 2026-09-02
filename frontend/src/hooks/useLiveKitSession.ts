@@ -279,9 +279,23 @@ export function useLiveKitSession() {
   // Cleanup on unmount
   useEffect(() => {
     return () => {
-      disconnect();
+      if (animFrameRef.current) {
+        cancelAnimationFrame(animFrameRef.current);
+      }
+      if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
+        audioContextRef.current.close().catch(() => {});
+      }
+      if (audioTrackRef.current) {
+        audioTrackRef.current.stop();
+      }
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((t) => t.stop());
+      }
+      if (roomRef.current) {
+        roomRef.current.disconnect();
+      }
     };
-  }, [disconnect]);
+  }, []);
 
   return {
     status: state.status,

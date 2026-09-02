@@ -63,27 +63,43 @@ export const AudioWaveform: FC<AudioWaveformProps> = ({
           } else {
             height = `${bar.minH}%`;
             animationStyle = {
-              animation: `waveformAnim ${bar.duration}s ease-in-out infinite alternate`,
+              animationName: 'waveformAnim',
+              animationDuration: `${bar.duration}s`,
+              animationTimingFunction: 'ease-in-out',
+              animationIterationCount: 'infinite',
+              animationDirection: 'alternate',
               animationDelay: `${bar.delay}s`,
             };
           }
         } else if (state === 'speaking') {
           height = `${bar.minH}%`;
           animationStyle = {
-            animation: `waveformAnim ${bar.duration}s ease-in-out infinite alternate`,
+            animationName: 'waveformAnim',
+            animationDuration: `${bar.duration}s`,
+            animationTimingFunction: 'ease-in-out',
+            animationIterationCount: 'infinite',
+            animationDirection: 'alternate',
             animationDelay: `${bar.delay}s`,
           };
         } else if (state === 'tool_running') {
           const radarPhase = (idx % 6) * 0.15;
           height = `${20 + Math.sin(idx) * 15}%`;
           animationStyle = {
-            animation: `radarPulse 1.2s ease-in-out infinite alternate`,
+            animationName: 'radarPulse',
+            animationDuration: '1.2s',
+            animationTimingFunction: 'ease-in-out',
+            animationIterationCount: 'infinite',
+            animationDirection: 'alternate',
             animationDelay: `${radarPhase}s`,
           };
         } else if (state === 'thinking') {
           height = `${15 + (idx % 3) * 10}%`;
           animationStyle = {
-            animation: `thinkingRipple 1.8s ease-in-out infinite alternate`,
+            animationName: 'thinkingRipple',
+            animationDuration: '1.8s',
+            animationTimingFunction: 'ease-in-out',
+            animationIterationCount: 'infinite',
+            animationDirection: 'alternate',
             animationDelay: `${(idx % 4) * 0.2}s`,
           };
         } else if (state === 'interrupted') {

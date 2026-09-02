@@ -379,15 +379,10 @@ export default function App() {
 
   // When live partial transcript arrives, update voiceState to listening if idle
   useEffect(() => {
-    if (stt.partialTranscript) {
-      if (voiceState === 'idle') {
-        setVoiceState('listening');
-      }
-      if (stt.latencyMs > 0) {
-        setMetrics((prev) => ({ ...prev, transcriptionMs: stt.latencyMs }));
-      }
+    if (stt.partialTranscript && voiceState === 'idle') {
+      setVoiceState('listening');
     }
-  }, [stt.partialTranscript, voiceState, stt.latencyMs]);
+  }, [stt.partialTranscript, voiceState]);
 
   // Cleanup on unmount
   useEffect(() => {
