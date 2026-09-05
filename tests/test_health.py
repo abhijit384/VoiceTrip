@@ -14,6 +14,6 @@ async def test_health_endpoint():
     assert data["app"] == settings.APP_NAME
     assert "services" in data
     assert "rime_tts" in data["services"]
-    assert "groq_llm" in data["services"]
+    assert "gemini_llm" in data["services"]
     assert "deepgram_stt" in data["services"]
     assert data["services"]["tool_delay_seconds"] == 5.0

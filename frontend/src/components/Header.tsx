@@ -1,5 +1,5 @@
 import type { FC } from 'react';
-import { Train, RotateCcw, Activity, ShieldCheck, Wifi, WifiOff, Loader2 } from 'lucide-react';
+import { Compass, RotateCcw, Activity, ShieldCheck, Wifi, WifiOff, Loader2, Mic } from 'lucide-react';
 import type { LiveKitConnectionStatus } from '../hooks/useLiveKitSession';
 
 interface HeaderProps {
@@ -10,6 +10,7 @@ interface HeaderProps {
   onDisconnect: () => void;
   onReset: () => void;
   latencyPing: number;
+  onOpenMicTest?: () => void;
 }
 
 export const Header: FC<HeaderProps> = ({
@@ -20,6 +21,7 @@ export const Header: FC<HeaderProps> = ({
   onDisconnect,
   onReset,
   latencyPing,
+  onOpenMicTest,
 }) => {
   const isConnected = connectionStatus === 'connected';
   const isConnecting = connectionStatus === 'connecting' || connectionStatus === 'reconnecting';
@@ -31,7 +33,7 @@ export const Header: FC<HeaderProps> = ({
         <div className="flex items-center gap-3">
           <div className="relative">
             <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-cyan-500 via-sky-500 to-indigo-600 flex items-center justify-center shadow-lg shadow-cyan-500/25 ring-1 ring-cyan-400/30">
-              <Train className="w-5 h-5 text-white" />
+              <Compass className="w-5 h-5 text-white animate-spin-slow" />
             </div>
             <span className="absolute -bottom-1 -right-1 flex h-3 w-3">
               <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${
@@ -49,11 +51,11 @@ export const Header: FC<HeaderProps> = ({
                 Voice<span className="text-cyan-400">Trip</span>
               </h1>
               <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-cyan-950/70 border border-cyan-500/40 text-cyan-300">
-                LiveKit Voice
+                Voice AI
               </span>
             </div>
             <p className="text-[11px] text-slate-400 font-medium">
-              Realtime Travel Assistant • Interruption & Stale Protection
+              AI Voice Travel Assistant • Flights, Hotels, Trains & Trips
             </p>
           </div>
         </div>
@@ -102,14 +104,27 @@ export const Header: FC<HeaderProps> = ({
             <WifiOff className="w-3 h-3 text-rose-400" />
           )}
 
-          <span>
-            {isConnected
-              ? isCloudConfigured
-                ? 'LiveKit Cloud'
-                : 'LiveKit (Audio Active)'
-              : isConnecting
-              ? 'Connecting...'
-              : 'LiveKit Disconnected'}
+          <span className="flex items-center gap-1.5">
+            <span
+              className={`w-2 h-2 rounded-full ${
+                isConnected
+                  ? 'bg-emerald-400 animate-pulse'
+                  : connectionStatus === 'error'
+                  ? 'bg-rose-500'
+                  : 'bg-slate-500'
+              }`}
+            />
+            <span>
+              {isConnected
+                ? isCloudConfigured
+                  ? 'LiveKit Cloud Connected'
+                  : 'LiveKit Connected'
+                : isConnecting
+                ? 'LiveKit Connecting...'
+                : connectionStatus === 'error'
+                ? 'LiveKit Connection Failed'
+                : 'LiveKit Disconnected'}
+            </span>
           </span>
 
           {isConnected && (
@@ -139,6 +154,16 @@ export const Header: FC<HeaderProps> = ({
             </button>
           )}
         </div>
+
+        {/* Isolated Microphone Diagnostic Link */}
+        <button
+          onClick={onOpenMicTest ? onOpenMicTest : () => { window.location.href = '/mic-test'; }}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-950/80 hover:bg-cyan-900 border border-cyan-500/50 text-cyan-300 transition text-xs font-bold shadow-sm"
+          title="Open Isolated Hardware Microphone Test Page"
+        >
+          <Mic className="w-3.5 h-3.5 text-cyan-400" />
+          <span>Mic Test (/mic-test)</span>
+        </button>
 
         {/* Desktop Reset Button */}
         <button

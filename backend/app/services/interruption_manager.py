@@ -153,11 +153,15 @@ class InterruptionManager:
         )
 
         train_count = len(search_result.trains)
-        train_names = ", ".join([t.name for t in search_result.trains[:2]])
-        spoken_response = (
-            f"Understood, switching to evening trains only. I found {train_count} evening options: "
-            f"{train_names}. Howrah Rajdhani departs at 16:55."
-        )
+        if train_count > 0:
+            first_train = search_result.trains[0]
+            train_names = ", ".join([t.name for t in search_result.trains[:2]])
+            spoken_response = (
+                f"Understood, switching to {new_constraint} trains. I found {train_count} options: "
+                f"{train_names}. First departure is at {first_train.departure}."
+            )
+        else:
+            spoken_response = f"Understood, searching for {new_constraint} trains between {origin} and {destination}."
 
         recovery_latency_ms = int((time.time() - start_time) * 1000)
 

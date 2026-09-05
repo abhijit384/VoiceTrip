@@ -1,287 +1,260 @@
-# VoiceTrip 🚄🎙️
+# VoiceTrip 🚄✈️🏨
 
-> **A Realtime Voice-Native Assistant with Interruption, Recovery, and Stale Result Protection during Long-Running Tool Calls.**  
-> Built for the **Rime Hackathon Challenge**.
-
-[![Pytest](https://img.shields.io/badge/pytest-21%20passed%20(100%25)-brightgreen.svg)](file:///d:/Rime%20PS/tests)
-[![Frontend](https://img.shields.io/badge/Vite%20React-Compiled%200%20errors-blue.svg)](file:///d:/Rime%20PS/frontend)
-[![Primary Voice](https://img.shields.io/badge/Primary%20Voice-Rime%20TTS%20(Amber)-8b5cf6.svg)](https://rime.ai)
-[![LLM Engine](https://img.shields.io/badge/LLM-Groq%20Llama%203.3-f97316.svg)](https://groq.com)
-[![STT](https://img.shields.io/badge/STT-Deepgram%20Nova--2-06b6d4.svg)](https://deepgram.com)
+> **Your AI Voice Travel Assistant**  
+> Built for the **Rime Hackathon Challenge**.  
+> Primary Spoken Output powered exclusively by **Rime TTS**.
 
 ---
 
-## 1. 📌 Problem
+## 1. Project Overview
+VoiceTrip is a voice-native travel assistant designed for hands-free, conversational travel planning. Whether searching trains, flights, hotels, or buses, VoiceTrip allows users to construct and modify travel plans purely through natural voice interactions.
 
-In voice-native applications, real-world tasks often require querying external systems (travel booking engines, flight APIs, database searches) that introduce unavoidable latencies of 3 to 10 seconds. When a human speaks to a voice agent and realizes they need to refine their request midway through a 5-second search (e.g. *"Actually, only evening trains"*), standard voice architectures suffer three catastrophic failure modes:
+The core voice engineering challenge VoiceTrip tackles is **barge-in interruption, recovery, and stale result protection** while the assistant is actively speaking or while background travel tools are running.
 
-1. **Ghost Audio (Conversational Collision)**: Obsolete audio that was already synthesized and queued in audio buffers continues playing out loud, talking over the user.
-2. **Stale State Leakage (Race Condition)**: The initial long-running background task finishes *after* the user's interruption and mistakenly overwrites the new conversation state, causing the assistant to speak obsolete morning trains.
-3. **Conversational Amnesia**: The system discards the original journey context (origin: Kolkata, destination: Delhi, date: tomorrow) and processes the secondary phrase *"only evening trains"* in isolation, leading to confusing errors.
+## 2. Problem
+In traditional travel apps, configuring a trip (origin, destination, date, class, departure time, budget) requires navigating numerous dropdown menus, date pickers, and filter sliders. This is friction-heavy and impractical on the go.
 
----
+Voice enables a fluid hands-free experience, but standard voice agents break down during real-world tasks that require asynchronous tool calls (e.g., querying train or flight databases with 3–8 second latencies). When a user refines their request midway through a search (e.g., *"Actually, only evening trains"*), standard voice architectures suffer from ghost audio collisions, stale state leakage, or complete conversational amnesia.
 
-## 2. 👥 Target User
+Removing voice from VoiceTrip would fundamentally destroy its value proposition: an interface where users can think out loud, interrupt the system safely, and change constraints on the fly without looking at a screen.
 
-- **Hands-Free Commuters & Travelers**: Individuals searching for transit schedules while walking, driving, or holding luggage where typing on a mobile keyboard is unsafe or inconvenient.
-- **Accessibility & Voice-First Users**: Users who rely entirely on spoken interactions for booking travel.
-- **High-Velocity Travel Agents & Callers**: Users who think aloud and frequently refine constraints (time of day, travel class, route) mid-utterance.
+## 3. Why Voice Is Necessary
+VoiceTrip is purpose-built as a voice-first system:
+- **Realtime Interaction**: Audio streams are captured via LiveKit / Web Audio and processed in realtime.
+- **Rime Spoken Output**: The assistant communicates back using expressive, low-latency Rime TTS (`mist` model, `amber` voice), creating a natural conversational partner.
+- **Instant Interruption**: Users can cut off the assistant mid-sentence to issue corrections with $< 25\text{ ms}$ audio cutoff.
+- **Hands-Free Workflow**: Visual cards accompany responses, but the full interaction loop is complete and intelligible through speech alone.
+- **Conversational Follow-Ups**: The assistant maintains a canonical context ledger, so saying *"What about tomorrow?"* or *"Show cheaper ones"* retains prior journey entities.
 
----
+## 4. Core Voice Challenge
+**"Interruption and recovery during long-running travel searches."**
 
-## 3. 🎙️ Why Voice is Essential
+When querying travel tools, responses take time. VoiceTrip guarantees the following behavior:
+- A user starts a travel request.
+- The assistant is either speaking or displaying an active progress bar while awaiting tool results.
+- The user interrupts to change or refine their request.
+- Active Rime playback stops **immediately** ($< 25\text{ ms}$).
+- **Stale background tool output is intercepted at the epoch barrier** and blocked from mutating conversation state or triggering speech.
+- The updated request immediately becomes the authoritative state.
+- The final Rime spoken response reflects only the newest request.
 
-Travel queries are inherently multi-dimensional: *Origin + Destination + Date + Departure Window + Class + Train Type*. 
-- In traditional GUI apps, configuring these parameters requires navigating multiple dropdown menus, date pickers, and filter checkboxes.
-- Through spoken voice, a user conveys the same complex intent in a single sentence: *"Find me trains from Kolkata to Delhi tomorrow evening."*
-- **Why Rime TTS is the Primary Voice**: Voice assistants live or die by vocal naturalness and latency. VoiceTrip uses [Rime TTS](https://rime.ai) as its exclusive spoken output. Rime's `mist` model with the `amber` voice delivers expressive human cadence, natural phrasing, and ultra-low Time-to-First-Byte (~280ms), making the assistant feel genuinely alive rather than robotic. Browser `speechSynthesis` is strictly prohibited.
+## 5. Key Features
+- **Voice Input**: Realtime microphone capture via Web Audio / LiveKit.
+- **Realtime / Interim Transcription**: Live STT provided by Deepgram (`flux-general-en` / `nova-2`) with railway acoustic keyterm boosting.
+- **Travel Search Tools**: Train, flight, hotel, and bus search capabilities with realistic Indian corridor routing.
+- **Non-Travel / General Intent Routing**: Natural conversational responses for greetings, jokes, and general questions without triggering travel tools.
+- **Travel Follow-ups**: Preserves active `CanonicalTravelContext` and merges new constraints.
+- **Interrupt AI Button**: Instant UI cutoff triggering generation epoch invalidation.
+- **Rime Spoken Output**: Primary voice output synthesizing natural, conversational 1–3 sentence summaries.
+- **Result Cards**: Native visual cards rendering returned train, flight, or hotel data.
+- **Stale-Request Protection**: Monotonic generation epochs track and discard obsolete background tasks.
 
----
+## 6. Demo Flow
+To evaluate the project, follow this exact sequence:
+1. Open the application at `http://127.0.0.1:5173/`.
+2. Click **Start Mic** (or select a scenario button).
+3. Speak a travel request: *"Find me trains from Kolkata to Delhi tomorrow."*
+4. Click **Stop Mic** (or allow silence endpointing).
+5. Watch the transcript appear in the feed.
+6. The assistant processes the request (showing the 5.0-second progress bar).
+7. While the tool is executing (or while Rime is speaking), click **Interrupt AI** or speak: *"Actually, only evening trains."*
+8. Active Rime audio halts immediately ($< 25\text{ ms}$) and `gen_1` is tagged `[STALE - RESULT BLOCKED]`.
+9. The `gen_2` turn processes with the merged `evening` constraint.
+10. The final result and spoken Rime audio correctly reflect evening trains (*Rajdhani, Duronto*), proving zero stale leakage occurred.
+11. Try a non-travel query: *"What can you do?"* or *"What is Python?"* (The assistant responds conversationally without invoking travel tools).
+12. Try a follow-up: *"Show cheaper ones"* or switch domain to *"Find hotels in Goa"*.
 
-## 4. 💡 Solution
-
-VoiceTrip implements an enterprise-grade voice architecture with **Monotonic Generation Epochs**, **Immediate Sub-25ms Audio Cutoff**, **Asynchronous Task Cancellation**, and a **Stale Result Protection Barrier**:
-
-- **Monotonic Generation Epochs**: Every user utterance is assigned an incremental epoch (`gen_1`, `gen_2`, etc.). When a barge-in is detected, the active epoch is bumped immediately.
-- **Instant Audio Cutoff**: Active and buffered Rime audio playback halts within **< 25ms** (`rimePlayer.stopAudio()`).
-- **Asynchronous Task Cancellation**: Running background tool coroutines are cancelled cleanly via `asyncio.Task.cancel()`.
-- **Stale Result Protection Barrier**: Any delayed tool computation returning with an obsolete generation ID is intercepted at the state barrier, tagged `[STALE - RESULT BLOCKED]`, and dropped before it can update state or trigger speech.
-- **Context Preservation & Recovery**: Origin, destination, and date are preserved and merged with the new constraint (`time_constraint="evening"`), returning evening trains (*Howrah Rajdhani, Howrah Duronto, Sealdah Rajdhani*).
-- **Rime Spoken Output**: The updated response is synthesized and vocalized exclusively through Rime TTS.
-
----
-
-## 5. 🏗️ Architecture
-
+## 7. Architecture
+```mermaid
+graph TD
+    UserVoice[User Voice] --> Frontend[Frontend - Web Audio / LiveKit]
+    Frontend --> STT[STT - Deepgram Flux / Nova-2]
+    STT --> Intent[Intent & Canonical Context - Gemini 3.6 Flash]
+    Intent --> TravelTool[Travel Tools / Search Engine]
+    TravelTool --> StateBarrier[State Barrier + Stale Result Protection]
+    StateBarrier --> VoiceSummarizer[Voice Summarizer / LLM]
+    VoiceSummarizer --> RimeTTS[Rime TTS - Primary Spoken Output]
+    RimeTTS --> FrontendAudio[Frontend Playback - Web Audio API]
 ```
-User Microphone (Browser WebRTC)
-       │
-       ▼
-LiveKit Realtime Session (`useLiveKitSession.ts` / LiveKit Cloud)
-       │ (150ms Audio Slices)
-       ▼
-FastAPI WebSocket Hub (`/api/ws/stt`)
-       │ (Server-Side DEEPGRAM_API_KEY Authentication)
-       ▼
-Deepgram Nova-2 Streaming STT (`wss://api.deepgram.com/v1/listen`)
-       │ (Interim & Final Transcripts + Barge-In Detection)
-       ▼
-Interruption & Epoch Manager (`interruption_manager.py`)
-       │ (Monotonic Epoch Gating: gen_1 → gen_2)
-       ▼
-Groq LLM Service (`llm_service.py` / Llama 3.3 70B Versatile)
-       │ (Tool Schema Calling: `search_trains`)
-       ▼
-Simulated Travel Search Tool (`tool_service.py`)
-       │ (Intentional 5.0s Delay + Asynchronous Cancellation)
-       │
-       ├─► [Stale Result Barrier] ──► Drops Obsolete gen_1 Results
-       │
-       ▼ (Fresh gen_2 Results)
-Rime TTS Synthesis Engine (`tts_service.py` / `https://users.rime.ai/v1/rime-tts`)
-       │ (`speaker: amber`, `modelId: mist`, `sampleRate: 24000`)
-       ▼
-Browser Realtime Audio Stream (`useRimeAudioPlayer.ts`)
-       │
-       ▼
-User Hears Spoken Response + Synchronized Organic Waveform Visualizer
-```
+- **Rime TTS** serves as the **PRIMARY SPOKEN OUTPUT** at the culmination of the voice pipeline.
+- The **State Barrier** intercepts asynchronous tool returns to ensure stale data from obsolete generation epochs never reaches the synthesis engine.
 
----
+## 8. Technology Stack
+- **Frontend**: React 19, Vite, TypeScript, Tailwind CSS, Web Audio API
+- **Backend**: Python 3.10+, FastAPI, Uvicorn, Asyncio
+- **Realtime Transport**: LiveKit WebRTC / WebSocket Hub
+- **STT**: Deepgram Flux / Nova-2
+- **LLM**: Google Gemini 3.6 Flash (via official `google-genai` SDK) with rule-based canonical fallback
+- **TTS**: Rime TTS (Primary Output — `mist` model, `amber` voice)
+- **Database**: Supabase (Optional for session persistence)
 
-## 6. 🛠️ Tech Stack
+## 9. Rime Integration
+Rime is exclusively used as the primary voice engine:
+- **Rime Model ID**: `mist`
+- **Rime Speaker/Voice**: `amber`
+- **Language**: English (`en`)
+- **Endpoint**: `https://users.rime.ai/v1/rime-tts`
+- **Audio Format**: `mp3` (24,000 Hz, 16-bit mono)
+- **Transport**: FastAPI backend sends HTTP POST requests to Rime API with JSON payload, decodes the base64 audio response, and streams binary audio to the frontend Web Audio API.
+- **Integration Files**: [`backend/app/services/tts_service.py`](file:///d:/Rime%20PS/backend/app/services/tts_service.py) and [`frontend/src/hooks/useRimeAudioPlayer.ts`](file:///d:/Rime%20PS/frontend/src/hooks/useRimeAudioPlayer.ts).
 
-| Layer | Technology | Purpose |
-|---|---|---|
-| **Voice TTS (Primary)** | **Rime TTS** (`mist` model, `amber` speaker) | Primary spoken voice output with ultra-low TTFB |
-| **STT Engine** | **Deepgram Nova-2** | Real-time WebSocket audio streaming & speech-to-text |
-| **LLM Engine** | **Groq Llama 3.3 70B Versatile** | Voice-optimized conversational reasoning & function calling |
-| **Realtime WebRTC** | **LiveKit** | Microphone track acquisition & low-latency audio transport |
-| **Backend Framework** | **FastAPI + Uvicorn (Python 3.14)** | Async API, WebSocket hub, and Interruption Orchestrator |
-| **Frontend Framework** | **React 18 + Vite + TypeScript** | Voice-agent UI, Web Audio API player, and reactive state machine |
-| **Styling & UI** | **Tailwind CSS + Lucide Icons** | Premium dark-mode glassmorphism interface |
-| **Test Suite** | **Pytest + Pytest-Asyncio + HTTPX** | 21 automated unit, integration, and race-condition tests |
+**Playback & Control:**
+Rime audio is streamed as binary to the browser where a Web Audio API buffer queues and plays it. If the user interrupts, the frontend issues an immediate `stopAudio()` command that flushes the buffer context instantly.
 
----
+*Note: The Rime API key is securely managed server-side via the `.env` file and is never exposed to the client.*
 
-## 7. 🚀 Setup Instructions
+## 10. Voice Interaction & Interruption
+When a user begins speaking, audio is streamed to the backend WebSocket. Deepgram transcribes this in realtime. Upon silence endpointing or manual stop, finalized text is routed through intent classification.
+If the user interrupts (via voice or the "Interrupt AI" button) while the assistant is speaking or awaiting a tool result:
+- The active Rime audio buffer is flushed in $< 25\text{ ms}$.
+- Active Python coroutines are cancelled via `asyncio.CancelledError`.
+- The session `generation_id` epoch is incremented (`gen_1` $\to$ `gen_2`).
+- Obsolete task results are caught at the barrier, tagged `[STALE - RESULT BLOCKED]`, and dropped.
 
-### Prerequisites
-- Python 3.10+ (tested on Python 3.14)
-- Node.js v18+ & npm v9+
-- Git
+## 11. Travel Capabilities
+The assistant supports multiple travel modalities:
+- **Trains**: Authentic Indian Railways schedules (Rajdhani, Duronto, Shatabdi, Express) with station code normalizer (`railway_normalizer.py`).
+- **Flights**: Realistic airline schedules between major metros.
+- **Hotels**: Accommodation searches with budget, rating, and location preference sorting.
+- **Buses & Routes**: Intercity connectivity options.
+- **General Travel Advice**: Packing tips, weather guidelines, and destination summaries handled natively by Gemini.
 
-### Step 1: Clone the Repository & Configure Environment
+*Note: Inventory and pricing returned by search tools use authentic, realistic simulated datasets for prototype evaluation purposes.*
+
+## 12. Input Routing
+Every input passes through an explicit intent classifier:
+- **Greetings** (*"Hello"*, *"Hi"*) $\to$ Conversational reply without travel tools.
+- **General Questions** (*"What is Python?"*, *"Tell me a joke"*) $\to$ Conversational reply without travel tools.
+- **Travel Requests** (*"Find flights from Kolkata to Delhi"*) $\to$ Triggers structured travel tool.
+- **Travel Follow-ups** (*"Show cheaper ones"*, *"Actually, evening"*) $\to$ Inherits canonical context and re-triggers tool.
+- **Ambiguous Requests** (*"Show me some"*) $\to$ Asks a concise clarification question.
+
+## 13. Location & Entity Disambiguation
+Explicit locations provided by the user in the current request always supersede stale context:
+- *"Kolkata to Delhi trains tonight?"* resolves strictly to `origin = KOAA`, `destination = DLI` (and never silently becomes `Howrah`).
+- Subsequent queries in a new domain (e.g., *"Find hotels in Jaipur"*) cleanly clear the previous train origin.
+
+## 14. Installation & Setup
+
+**Prerequisites**: Python 3.10+, Node.js v18+
+
 ```bash
+# Clone the repository
 git clone <repo-url>
 cd "Rime PS"
 
-# Copy environment template
+# Configure environment variables
 cp .env.example .env
 ```
 
-### Step 2: Backend Setup
+### Backend Setup:
 ```bash
 cd backend
-
-# Create virtual environment
 python -m venv .venv
 
 # Activate virtual environment:
-# On Windows PowerShell:
+# Windows PowerShell:
 .\.venv\Scripts\activate
-# On macOS / Linux:
+# macOS / Linux:
 # source .venv/bin/activate
 
-# Install dependencies
 pip install -r requirements.txt
-
-# Start FastAPI server
-python -m uvicorn main:app --host 127.0.0.1 --port 8000 --reload
 ```
-FastAPI runs at **`http://127.0.0.1:8000`** (Swagger docs at `/docs`).
 
-### Step 3: Frontend Setup
+### Frontend Setup:
 ```bash
 cd ../frontend
-
-# Install node dependencies
 npm install
-
-# Start Vite dev server
-npm run dev -- --host 127.0.0.1 --port 5173
-```
-Open **`http://127.0.0.1:5173`** in Google Chrome or Microsoft Edge.
-
----
-
-## 8. 🔑 Environment Variables
-
-All secrets stay strictly on the backend. No credentials are leaked to the client.
-
-| Variable | Description | Default / Example |
-|---|---|---|
-| `RIME_API_KEY` | Official API key for Rime TTS | `your_rime_api_key_here` |
-| `RIME_API_URL` | Rime TTS endpoint | `https://users.rime.ai/v1/rime-tts` |
-| `RIME_MODEL_ID` | Rime neural voice model | `mist` |
-| `RIME_SPEAKER` | Rime voice persona | `amber` |
-| `RIME_AUDIO_FORMAT` | Audio compression container | `mp3` |
-| `RIME_SAMPLE_RATE` | Audio sampling frequency (Hz) | `24000` |
-| `RIME_SPEED_ALPHA` | Speech rate multiplier | `1.0` |
-| `GROQ_API_KEY` | Groq Cloud API key | `your_groq_api_key_here` |
-| `GROQ_MODEL` | Free-tier Groq LLM model | `llama-3.3-70b-versatile` |
-| `DEEPGRAM_API_KEY` | Deepgram STT API key | `your_deepgram_api_key_here` |
-| `DEEPGRAM_MODEL` | Deepgram model | `nova-2` |
-| `LIVEKIT_URL` | LiveKit Cloud WebSocket URL | `wss://your-project.livekit.cloud` |
-| `LIVEKIT_API_KEY` | LiveKit project key | `your_livekit_api_key_here` |
-| `LIVEKIT_API_SECRET` | LiveKit project secret | `your_livekit_api_secret_here` |
-| `SUPABASE_URL` | Supabase project URL (optional persistence) | `https://your-project.supabase.co` |
-| `SUPABASE_PUBLISHABLE_KEY` | Supabase publishable key (client & server safe) | `your_supabase_publishable_key_here` |
-| `SUPABASE_SECRET_KEY` | Supabase secret key (**SERVER-SIDE ONLY**, never client-facing) | `your_supabase_secret_key_here` |
-| `VITE_SUPABASE_URL` | Frontend Vite Supabase URL (optional) | `https://your-project.supabase.co` |
-| `VITE_SUPABASE_PUBLISHABLE_KEY` | Frontend Vite publishable key (client-safe) | `your_supabase_publishable_key_here` |
-| `TOOL_ARTIFICIAL_DELAY_SECONDS` | Intentional tool latency for stress testing | `5.0` |
-
----
-
-## 9. 🎙️ Rime TTS Configuration
-
-Rime TTS is configured in `backend/app/core/config.py` and instantiated via `backend/app/services/tts_service.py`:
-
-```python
-payload = {
-    "speaker": "amber",
-    "text": spoken_text,
-    "modelId": "mist",
-    "audioFormat": "mp3",
-    "samplingRate": 24000,
-    "speedAlpha": 1.0,
-}
 ```
 
-### Response Headers Returned to Frontend Audio Player:
-- `X-Rime-Speaker: amber`
-- `X-Rime-Model: mist`
-- `X-Generation-ID: gen_2`
-- `X-Voice-Provider: rime`
-- `Content-Type: audio/mpeg`
+## 15. Environment Variables
+See `.env.example` for the complete template. Key variables:
 
----
-
-## 10. 🌐 Third-Party Services
-
-1. **[Rime TTS](https://rime.ai)**: Primary voice synthesis engine for conversational spoken output.
-2. **[Groq](https://groq.com)**: Ultra-fast Llama 3.3 70B inference on free tier for low-latency voice reasoning.
-3. **[Deepgram](https://deepgram.com)**: Streaming speech-to-text with interim word detection and endpointing.
-4. **[LiveKit](https://livekit.io)**: WebRTC audio infrastructure for browser microphone streaming.
-5. **[Supabase](https://supabase.com)**: Optional PostgreSQL database for session persistence, utilizing the modern Publishable Key (`SUPABASE_PUBLISHABLE_KEY`) and strictly server-side Secret Key (`SUPABASE_SECRET_KEY`) format.
-
----
-
-## 11. ⚠️ Known Limitations
-
-- **Browser Audio Context Autoplay**: Modern browsers require user interaction (e.g. clicking "Connect Mic" or an acceptance test button) before allowing audio output.
-- **Simulated IRCTC Data**: Train schedules for Kolkata to Delhi routes (Howrah Rajdhani, Duronto, Sealdah Rajdhani, Poorva Express) use a realistic demo dataset rather than live live-running IRCTC API credentials.
-- **Free Tier Rate Limits**: Groq and Deepgram free tiers enforce per-minute rate limits; production deployments should configure production quotas.
-
----
-
-## 12. 🛡️ Failure Behavior & Resiliency
-
-VoiceTrip includes graceful multi-layer fallbacks so that evaluation never breaks:
-
-| Component Failure | System Behavior | User Experience |
+| Variable | Purpose | Required |
 |---|---|---|
-| **Microphone Disconnected / Denied** | LiveKit session hook handles error; UI indicates `Mic Permission Denied` with reconnect action. | User is prompted to grant mic access or use 1-click simulation buttons. |
-| **Deepgram STT Network Drop** | Frontend falls back to native browser SpeechRecognition automatically. | Speech continues to transcribe seamlessly without crashing. |
-| **Groq LLM Offline / Quota Exceeded** | `GroqLLMService` switches to local conversational fallback generator. | Assistant parses query, calls tools, and responds conversationally. |
-| **Rime TTS Key Missing / Offline** | `RimeTTSService` synthesizes a 24kHz vocal frequency audio tone matching syllables and duration. | Browser Web Audio API plays sound, triggers waveform, and exercises the complete pipeline without cloud errors. |
-| **Tool Execution Cancelled** | Task catches `asyncio.CancelledError` cleanly; logs cancellation without leaving orphaned threads. | UI displays `[Tool task aborted upon user barge-in]`. |
-| **Stale Tool Result Arrives Late** | `InterruptionManager.process_tool_result` drops the result (`return None`). | Stale result is stamped `[STALE - RESULT BLOCKED]` and never touches LLM or speaker. |
+| `RIME_API_KEY` | Authenticates with Rime TTS | Yes |
+| `RIME_API_URL` | Rime TTS endpoint (`https://users.rime.ai/v1/rime-tts`) | Yes |
+| `GEMINI_API_KEY` | Google Gemini API key for NLU / Intent | Yes |
+| `DEEPGRAM_API_KEY` | Deepgram API key for realtime STT | Yes |
+| `LIVEKIT_URL` | LiveKit Cloud WebRTC project URL | Optional / Realtime |
+| `LIVEKIT_API_KEY` | LiveKit authentication key | Optional / Realtime |
+| `LIVEKIT_API_SECRET` | LiveKit authentication secret | Optional / Realtime |
 
----
+*Note: API keys are securely read from `.env` on the backend. No secrets are tracked in version control.*
 
-## 13. 🧪 Testing Instructions
+## 16. Running Locally
 
-### A. Run the Complete Automated Backend Test Suite (21 Tests)
+**Start Backend** (Terminal 1):
 ```bash
 cd backend
-.\.venv\Scripts\pytest ..\tests\ -v
+python -m uvicorn main:app --host 127.0.0.1 --port 8000
 ```
 
-**Results**:
-- `test_health_endpoint` (PASSED)
-- `test_livekit_token_get` & `test_livekit_token_post` (PASSED)
-- `test_websocket_stt_handshake` (PASSED)
-- `test_llm_service_train_tool_call` & `test_chat_api_endpoint` (PASSED)
-- `test_chat_conversation_history_persistence` (PASSED)
-- `test_rime_tts_service_instantiation` & `test_rime_tts_api_endpoints` (PASSED)
-- `test_tool_api_search_trains` & `test_tool_api_interrupt` (PASSED)
-- `test_successful_tool_execution` (PASSED)
-- `test_tool_cancellation` (PASSED)
-- `test_stale_result_protection` (PASSED)
-- `test_tool_timeout` (PASSED)
-- `test_race_condition_tool_result_arriving_after_interruption` (PASSED)
-- `test_race_condition_audio_arriving_after_cancellation` (PASSED)
-- `test_race_condition_multiple_rapid_interruptions` (PASSED)
-- `test_race_condition_cancellation_during_llm_generation` (PASSED)
-- `test_race_condition_cancellation_during_tts_generation` (PASSED)
-- `test_main_interruption_acceptance_test` (PASSED)
+**Start Frontend** (Terminal 2):
+```bash
+cd frontend
+npm run dev -- --host 127.0.0.1 --port 5173
+```
+Open `http://127.0.0.1:5173/` in Google Chrome or Microsoft Edge.
 
-### B. Run the Browser UI Demo
-1. Open `http://127.0.0.1:5173/` in your browser.
-2. Click **"Acceptance Test: Kolkata to Delhi + Evening Interruption"** in the Demo Scenarios panel.
-3. Observe:
-   - Initial prompt under `gen_1`: *"Find me trains from Kolkata to Delhi tomorrow."*
-   - Tool execution begins with the **5.0-second countdown bar**.
-   - User interrupts at 2.2s: *"Actually, only evening trains."*
-   - Audio cuts off in **< 25ms**.
-   - `gen_1` is marked `[STALE - RESULT BLOCKED]`.
-   - `gen_2` recovers with evening trains (*Howrah Rajdhani, Duronto, Sealdah Rajdhani*).
-   - Assistant vocalizes the response exclusively through **Rime TTS**.
+## 17. Automated Testing
+Run the backend test suite:
+```bash
+cd backend
+pytest ..\tests\test_interruption_recovery.py -v
+```
+To run tool and API verification tests:
+```bash
+pytest ..\tests\test_tool_service.py ..\tests\test_tool_api.py -v
+```
 
----
+## 18. Rime Acceptance Evidence
+See [`RIME_EVIDENCE.md`](file:///d:/Rime%20PS/RIME_EVIDENCE.md) for the hard-voice claim, test procedures, measured results, and full acceptance logs for Tests A through F.
 
-## ⚖️ License
+## 19. Demo & Deliverable Links
+- **Demo Video**: [ADD LINK]
+- **Source Repository**: [ADD LINK]
+- **Architecture Documentation**: [`docs/ARCHITECTURE.md`](file:///d:/Rime%20PS/docs/ARCHITECTURE.md)
+- **Rime Evidence Document**: [`RIME_EVIDENCE.md`](file:///d:/Rime%20PS/RIME_EVIDENCE.md)
 
-MIT License. Created for the **Rime Hackathon Challenge**.
+## 20. Documented Limitations
+- **Prototype Travel Data**: Search inventory uses realistic in-memory schedules rather than live IRCTC/GDS booking gateways.
+- **Browser Autoplay Policy**: Browsers require initial user interaction before allowing programmatic Web Audio playback.
+- **Physical Room Acoustics**: In open speaker environments without headphones, acoustic bleeding into the mic can trigger barge-ins; client-side audio muting mitigates this.
+
+## 21. Failure Recovery
+- **Microphone Denied**: UI presents error badge; user can trigger simulation buttons.
+- **STT Fails**: Falls back to browser SpeechRecognition or direct text entry.
+- **Rime Fails / Offline**: Falls back to local 24kHz synthesized formant audio to prevent pipeline crashes.
+- **User Interrupts**: Ongoing Rime playback halts in $< 25\text{ ms}$, background tasks aborted via `asyncio.CancelledError`.
+- **Stale Tool Result**: Intercepted by epoch barrier and tagged `[STALE - RESULT BLOCKED]`.
+
+## 22. Project Structure
+```
+Rime PS/
+├── README.md
+├── RIME_EVIDENCE.md
+├── SUBMISSION_CHECKLIST.md
+├── .env.example
+├── docs/
+│   └── ARCHITECTURE.md
+├── backend/
+│   ├── app/
+│   │   ├── api/
+│   │   ├── core/
+│   │   ├── models/
+│   │   └── services/
+│   ├── main.py
+│   └── requirements.txt
+├── frontend/
+│   ├── src/
+│   │   ├── components/
+│   │   ├── hooks/
+│   │   └── utils/
+│   ├── package.json
+│   └── vite.config.ts
+└── tests/
+    ├── test_interruption_recovery.py
+    ├── test_tool_service.py
+    └── browser_e2e_test.cjs
+```

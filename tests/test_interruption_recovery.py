@@ -2,7 +2,7 @@ import asyncio
 import pytest
 from app.services.interruption_manager import InterruptionManager
 from app.services.tool_service import ToolService
-from app.services.llm_service import GroqLLMService
+from app.services.gemini_service import GeminiService
 from app.services.tts_service import RimeTTSService
 from app.models.travel import SearchTrainsResult
 
@@ -132,7 +132,7 @@ async def test_race_condition_cancellation_during_llm_generation():
     - LLM call is running when user speaks.
     - Task is cancelled cleanly without leaving orphaned coroutines.
     """
-    llm = GroqLLMService()
+    llm = GeminiService()
     manager = InterruptionManager()
     session_id = "test_race_4"
 

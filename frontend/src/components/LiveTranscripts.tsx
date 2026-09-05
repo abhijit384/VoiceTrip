@@ -9,6 +9,7 @@ interface LiveTranscriptsProps {
   state: VoiceState;
   isStreaming?: boolean;
   sttProvider?: string;
+  speechVolume?: number;
 }
 
 export const LiveTranscripts: FC<LiveTranscriptsProps> = ({
@@ -17,12 +18,13 @@ export const LiveTranscripts: FC<LiveTranscriptsProps> = ({
   aiTranscript,
   state,
   isStreaming = false,
-  sttProvider = 'Deepgram Nova-2',
+  sttProvider = 'Deepgram Flux',
+  speechVolume = 0,
 }) => {
   return (
     <div className="w-full max-w-4xl mx-auto grid grid-cols-1 md:grid-cols-2 gap-4">
       {/* Live User Transcript Card */}
-      <div className="relative rounded-2xl bg-slate-900/80 border border-slate-800 p-4 md:p-5 flex flex-col justify-between shadow-lg backdrop-blur-md min-h-[150px] hover:border-slate-700 transition">
+      <div className="relative rounded-2xl bg-slate-900/80 border border-slate-800 p-4 md:p-5 flex flex-col justify-between shadow-lg backdrop-blur-md min-h-[160px] hover:border-slate-700 transition">
         <div>
           <div className="flex items-center justify-between mb-2">
             <div className="flex items-center gap-2 text-xs font-semibold text-sky-400">
@@ -57,10 +59,29 @@ export const LiveTranscripts: FC<LiveTranscriptsProps> = ({
             ) : (
               !userTranscript && (
                 <p className="text-slate-500 italic">
-                  Awaiting spoken input... Try saying "Find me trains from Kolkata to Delhi tomorrow"
+                  Awaiting spoken input... Speak naturally into your microphone
                 </p>
               )
             )}
+          </div>
+
+          {/* Real-time Voice Audio Level Progress Bar */}
+          <div className="mt-3.5 p-2 rounded-xl bg-slate-950/80 border border-slate-800/80">
+            <div className="flex items-center justify-between text-[10px] mb-1 font-mono">
+              <span className="flex items-center gap-1.5 text-cyan-400 font-semibold">
+                <span className={`w-2 h-2 rounded-full ${speechVolume > 5 ? 'bg-cyan-400 animate-ping' : 'bg-slate-600'}`} />
+                <span>Voice Input Level</span>
+              </span>
+              <span className={`font-bold ${speechVolume > 5 ? 'text-cyan-300' : 'text-slate-500'}`}>
+                {speechVolume}%
+              </span>
+            </div>
+            <div className="w-full h-2 bg-slate-900 rounded-full overflow-hidden p-0.5 border border-slate-800/80">
+              <div
+                className="h-full bg-gradient-to-r from-sky-500 via-cyan-400 to-emerald-400 rounded-full transition-all duration-75 ease-out shadow-[0_0_8px_rgba(6,182,212,0.6)]"
+                style={{ width: `${Math.min(100, Math.max(speechVolume > 0 ? 3 : 0, speechVolume))}%` }}
+              />
+            </div>
           </div>
         </div>
 

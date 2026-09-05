@@ -9,7 +9,9 @@ from app.api.websocket_hub import router as ws_router
 from app.api.session import router as session_router
 from app.api.tool import router as tool_router
 from app.api.tts import router as tts_router
+from app.api.stt import router as stt_router
 from app.api.orchestrator import router as orchestrator_router
+from app.api.ocr import router as ocr_router
 
 logging.basicConfig(
     level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO),
@@ -22,7 +24,8 @@ logger = logging.getLogger("rime-assistant")
 async def lifespan(app: FastAPI):
     logger.info(f"Starting {settings.APP_NAME} v{settings.APP_VERSION}")
     logger.info(f"Rime TTS Configured: {bool(settings.RIME_API_KEY)} (Speaker: {settings.RIME_SPEAKER})")
-    logger.info(f"Groq Model: {settings.GROQ_MODEL}")
+    logger.info(f"Gemini LLM: {settings.GEMINI_MODEL} (Configured: {bool(settings.GEMINI_API_KEY)})")
+    logger.info(f"Deepgram STT: {settings.DEEPGRAM_MODEL} (Configured: {bool(settings.DEEPGRAM_API_KEY)})")
     logger.info(f"Tool Delay: {settings.TOOL_ARTIFICIAL_DELAY_SECONDS}s")
     yield
     logger.info("Shutting down voice assistant backend")
@@ -36,23 +39,35 @@ app = FastAPI(
     redoc_url="/redoc",
 )
 
-# CORS Configuration for local Vite dev and testing
+ALLOWED_ORIGINS = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:8000",
+    "http://127.0.0.1:8000",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD", "PATCH"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 # Mount API Routers
 app.include_router(health_router, prefix="/api")
 app.include_router(livekit_router, prefix="/api")
 app.include_router(ws_router, prefix="/api")
+app.include_router(stt_router, prefix="/api")
 app.include_router(session_router, prefix="/api")
 app.include_router(tool_router, prefix="/api")
 app.include_router(tts_router, prefix="/api")
 app.include_router(orchestrator_router, prefix="/api")
+app.include_router(ocr_router, prefix="/api")
 
 
 @app.get("/")

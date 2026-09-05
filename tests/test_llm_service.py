@@ -1,12 +1,12 @@
 import pytest
 from httpx import AsyncClient, ASGITransport
 from main import app
-from app.services.llm_service import GroqLLMService
+from app.services.gemini_service import GeminiService
 
 
 @pytest.mark.asyncio
 async def test_llm_service_train_tool_call():
-    service = GroqLLMService()
+    service = GeminiService()
     messages = [
         {"role": "user", "content": "Find me trains from Kolkata to Delhi tomorrow evening."}
     ]

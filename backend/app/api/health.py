@@ -23,9 +23,9 @@ async def health_check():
                 "speaker": settings.RIME_SPEAKER,
                 "endpoint": settings.RIME_API_URL,
             },
-            "groq_llm": {
-                "configured": bool(settings.GROQ_API_KEY),
-                "model": settings.GROQ_MODEL,
+            "gemini_llm": {
+                "configured": bool(settings.GEMINI_API_KEY),
+                "model": settings.GEMINI_MODEL,
             },
             "deepgram_stt": {
                 "configured": bool(settings.DEEPGRAM_API_KEY),

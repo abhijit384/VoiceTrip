@@ -19,10 +19,21 @@ async function runE2ETest() {
   await page.setViewport({ width: 1280, height: 960 });
 
   const consoleErrors = [];
+  const telemetryLogs = [];
   page.on('console', (msg) => {
+    const text = msg.text();
     if (msg.type() === 'error') {
-      consoleErrors.push(msg.text());
-      console.error('Browser Error:', msg.text());
+      consoleErrors.push(text);
+      console.error('Browser Error:', text);
+    } else if (
+      text.includes('[SESSION]') ||
+      text.includes('[STT]') ||
+      text.includes('[LLM]') ||
+      text.includes('[TOOL]') ||
+      text.includes('[RIME]')
+    ) {
+      telemetryLogs.push(text);
+      console.log('⚡ ' + text);
     }
   });
 
