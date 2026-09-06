@@ -201,6 +201,105 @@ class GeminiService:
                 return canonical
         return None
 
+    def _clean_city_token(self, token: Optional[str]) -> Optional[str]:
+        """Cleans and canonicalizes an extracted city/station token string."""
+        if not token:
+            return None
+        t = token.strip()
+        # Remove common action and preposition noise prefixes
+        t = re.sub(
+            r"^(?:from|to|for|at|in|near|around|the|a|an|search|find|show|book|check|get|look up|flights?|trains?|bus(?:es)?|cab|tickets?)\s+",
+            "",
+            t,
+            flags=re.IGNORECASE,
+        )
+        # Remove trailing mode/time noise suffixes
+        t = re.sub(
+            r"\s+(?:flights?|fly|trains?|rail|bus(?:es)?|tomorrow|today|tonight|please|now|tickets?)$",
+            "",
+            t,
+            flags=re.IGNORECASE,
+        )
+        t = t.strip(" ,.?!'\"")
+        if not t or len(t) < 2:
+            return None
+        if t.lower() in ["me", "us", "you", "him", "her", "them", "here", "there", "somewhere", "anywhere", "what", "where", "how", "when", "why", "city", "place", "airport", "station"]:
+            return None
+        # Check canonical city mapping
+        canonical = self._extract_known_destination(t)
+        if canonical:
+            return canonical
+        # Check station code
+        stn = railway_normalizer.resolve_station_code(t)
+        if stn:
+            return stn
+        return t.title()
+
+    def _extract_explicit_route(self, text: str) -> Tuple[Optional[str], Optional[str]]:
+        """
+        Extracts origin and destination from explicit route utterances for ANY cities or stations.
+        Cleans commas, semicolons, and prefixes ('search', 'find', 'flights', etc.).
+        """
+        # Normalize punctuation: replace commas, semicolons, extra spaces
+        clean = re.sub(r"[,;]+", " ", text)
+        clean = re.sub(r"\s+", " ", clean).strip()
+
+        # Pattern 1: "from <ORIGIN> to <DESTINATION>"
+        m_from_to = re.search(
+            r"\bfrom\s+([A-Za-z\s\.\'-]+?)\s+to\s+([A-Za-z\s\.\'-]+?)(?:\s+(?:flights?|fly|trains?|rail|bus(?:es)?|tomorrow|today|tonight|on|in|at|for|this|next|morning|evening|afternoon|night|cheapest|direct)|[\.,\?!]|$)",
+            clean,
+            re.IGNORECASE,
+        )
+        if m_from_to:
+            orig = self._clean_city_token(m_from_to.group(1))
+            dest = self._clean_city_token(m_from_to.group(2))
+            if orig and dest:
+                return orig, dest
+
+        # Pattern 2: "to <DESTINATION> from <ORIGIN>"
+        m_to_from = re.search(
+            r"\bto\s+([A-Za-z\s\.\'-]+?)\s+from\s+([A-Za-z\s\.\'-]+?)(?:\s+(?:flights?|fly|trains?|rail|bus(?:es)?|tomorrow|today|tonight|on|in|at|for|this|next|morning|evening|afternoon|night)|[\.,\?!]|$)",
+            clean,
+            re.IGNORECASE,
+        )
+        if m_to_from:
+            dest = self._clean_city_token(m_to_from.group(1))
+            orig = self._clean_city_token(m_to_from.group(2))
+            if orig and dest:
+                return orig, dest
+
+        # Pattern 3: "between <ORIGIN> and <DESTINATION>"
+        m_between = re.search(
+            r"\bbetween\s+([A-Za-z\s\.\'-]+?)\s+and\s+([A-Za-z\s\.\'-]+?)(?:\s+(?:flights?|fly|trains?|rail|bus(?:es)?|tomorrow|today|tonight|on|in|at|for)|[\.,\?!]|$)",
+            clean,
+            re.IGNORECASE,
+        )
+        if m_between:
+            orig = self._clean_city_token(m_between.group(1))
+            dest = self._clean_city_token(m_between.group(2))
+            if orig and dest:
+                return orig, dest
+
+        # Pattern 4: "<ORIGIN> to <DESTINATION>"
+        stripped = re.sub(
+            r"^(?:search|find|show|book|check|get|look up|please|can you find|can you search|i want to find|i want|i need|flights?|trains?|bus(?:es)?)\s+",
+            "",
+            clean,
+            flags=re.IGNORECASE,
+        )
+        m_city_to_city = re.search(
+            r"\b([A-Za-z\s\.\'-]+?)\s+to\s+([A-Za-z\s\.\'-]+?)(?:\s+(?:flights?|fly|trains?|rail|bus(?:es)?|tomorrow|today|tonight|on|in|at|for|this|next|morning|evening|afternoon|night|cheapest|direct)|[\.,\?!]|$)",
+            stripped,
+            re.IGNORECASE,
+        )
+        if m_city_to_city:
+            orig = self._clean_city_token(m_city_to_city.group(1))
+            dest = self._clean_city_token(m_city_to_city.group(2))
+            if orig and dest:
+                return orig, dest
+
+        return None, None
+
     def _fallback_intent_classifier(
         self,
         user_message: str,
@@ -208,17 +307,20 @@ class GeminiService:
     ) -> CanonicalTravelContext:
         """
         Deterministic rule-based intent and canonical context resolver.
-        Guarantees correct follow-up merging, superlative handling, and zero cross-domain leakage.
+        Guarantees:
+        1. Explicit travel requests ALWAYS win over prior context (0 context leakage).
+        2. Short follow-ups (e.g. 'Tomorrow', 'Two', 'Cheapest') resolve against active context.
+        3. Standalone greetings/conversational inputs never trigger travel tools.
+        4. Never confuses travel searches with destination-info tourism guides.
         """
         lower = user_message.lower().strip()
         prev_summary = prior_context.to_readable_summary() if prior_context else None
 
         # Clean punctuation for pattern matching
         clean_text = re.sub(r"[^\w\s]", " ", lower).strip()
-        words = clean_text.split()
 
         has_travel_cues = bool(re.search(
-            r"\b(?:train|trains|flight|flights|fly|hotel|hotels|stay|resort|bus|buses|route|cab|travel|ticket|tickets|booking|delhi|kolkata|mumbai|bangalore|bengaluru|chennai|goa|jaipur|howrah|sealdah|njp|pune|hyderabad)\b",
+            r"\b(?:train|trains|flight|flights|fly|plane|hotel|hotels|stay|resort|bus|buses|route|cab|travel|ticket|tickets|booking|delhi|kolkata|mumbai|bangalore|bengaluru|chennai|goa|jaipur|howrah|sealdah|njp|pune|hyderabad)\b",
             lower,
             re.IGNORECASE,
         ))
@@ -237,23 +339,137 @@ class GeminiService:
             ctx.updated_summary = "Greeting"
             return ctx
 
-        # 2. SHORT TRAVEL FOLLOW-UP ANSWERS (CRITICAL: 'Tomorrow', 'Two', 'Search flights', 'Delhi', 'Cheapest')
-        # If active/prior travel context exists, resolve short answers against it immediately!
-        if prior_context and prior_context.intent in ["flight_search", "train_search", "hotel_search", "bus_search", "route_search", "destination_info", "general_travel"]:
-            # Check 2a: Short Date / Time Answer (e.g. "Tomorrow", "Today", "Tonight", "Day after tomorrow", "Friday")
+        # 2. CONVERSATIONAL / GENERAL (NON-TRAVEL)
+        general_conversational_phrases = [
+            "how are you", "how are you doing", "how do you do", "how is it going", "hows it going", "whats up",
+            "what can you do", "what are your capabilities", "what can you help with", "who are you",
+            "what is your name", "who made you", "who created you", "tell me about yourself",
+            "thanks", "thank you", "thanks a lot", "thank you so much", "thx",
+            "bye", "goodbye", "see you", "see ya", "talk to you later", "good night",
+            "tell me a joke", "joke", "make me laugh", "tell me something funny",
+            "what is python", "python", "what is machine learning", "explain machine learning", "machine learning",
+            "what is ai", "what is an llm", "tell me about coding", "what is programming",
+            "what is the capital of france", "capital of france",
+            "what is the weather like", "whats the weather like", "whats the weather", "what is the weather",
+            "what time is it", "whats the time", "what day is it",
+            "help", "i need help",
+            "what is javascript", "what is java", "what is html", "what is css",
+            "what is react", "what is nodejs", "what is sql", "what is a database",
+            "tell me something", "tell me something interesting", "fun fact",
+            "how does ai work", "how does machine learning work", "explain ai",
+            "what are you", "are you a robot", "are you human", "are you real",
+            "sing a song", "tell me a story", "recite a poem",
+            "good job", "well done", "that was helpful", "you are great", "youre great",
+            "never mind", "forget it", "cancel",
+        ]
+        if not has_travel_cues:
+            is_exact_general = any(clean_text == p for p in general_conversational_phrases)
+            if is_exact_general:
+                ctx = CanonicalTravelContext(
+                    intent="conversational",
+                    request_type="NEW",
+                    previous_summary=None,
+                )
+                ctx.updated_summary = "Conversational"
+                return ctx
+
+        # Extract dates and times
+        time_val = "evening" if "evening" in lower else ("morning" if "morning" in lower else ("afternoon" if "afternoon" in lower else ("night" if "night" in lower or "tonight" in lower else "any")))
+        date_val = "day after tomorrow" if "day after tomorrow" in lower else ("today" if "today" in lower or "tonight" in lower else "tomorrow")
+
+        # 3. EXPLICIT ROUTE TRAVEL REQUEST (HIGHEST TRAVEL PRIORITY - ALWAYS 'NEW')
+        # Handles: "Search Kolkata to, Mumbai flights", "Flights from Kolkata to Hyderabad", "Kolkata to Delhi trains tonight"
+        exp_orig, exp_dest = self._extract_explicit_route(user_message)
+        if exp_orig and exp_dest:
+            is_flight = any(w in lower for w in ["flight", "flights", "fly", "plane", "airline", "air"])
+            is_train = any(w in lower for w in ["train", "trains", "railway", "irctc", "rail", "shatabdi", "rajdhani", "vande bharat"])
+            is_bus = any(w in lower for w in ["bus", "buses", "volvo"])
+
+            if is_train:
+                intent_val = "train_search"
+            elif is_bus:
+                intent_val = "bus_search"
+            elif is_flight:
+                intent_val = "flight_search"
+            else:
+                # Default to flight or train if context implies
+                intent_val = "flight_search"
+
+            ctx = CanonicalTravelContext(
+                intent=intent_val,
+                origin=exp_orig,
+                destination=exp_dest,
+                travel_date=date_val,
+                time_constraint=time_val,
+                passengers=1,
+                request_type="NEW",
+                previous_summary=prev_summary,
+            )
+            ctx.updated_summary = ctx.to_readable_summary()
+            return ctx
+
+        # 4. EXPLICIT HOTEL SEARCH (ALWAYS 'NEW' if destination provided)
+        if any(w in lower for w in ["hotel", "hotels", "stay", "resort", "room", "accommodation", "places to stay"]):
+            dest = self._extract_known_destination(user_message)
+            if not dest:
+                m_prep = re.search(r"\b(?:in|at|for|near|around|by)\s+([A-Za-z\s]+?)(?:\s+(?:under|below|less than|budget|tomorrow|today|with|for|\d+)|\.|\?|$)", user_message, re.IGNORECASE)
+                if m_prep:
+                    cand = m_prep.group(1).strip()
+                    if cand.lower() not in ["a", "the", "my", "our", "there"]:
+                        dest = cand.title()
+                if not dest:
+                    m_prefix = re.search(r"\b([A-Za-z]+)\s+hotels?\b", user_message, re.IGNORECASE)
+                    if m_prefix and m_prefix.group(1).lower() not in ["find", "search", "show", "get", "book", "good", "best", "cheap"]:
+                        dest = m_prefix.group(1).title()
+
+            budget = None
+            budget_match = re.search(r"\b(?:under|below|less than|budget of|budget)\s*₹?\s*(\d+)", lower)
+            if budget_match:
+                budget = float(budget_match.group(1))
+
+            sort_val = None
+            if any(w in lower for w in ["cheapest", "cheaper", "lowest price", "least expensive"]):
+                sort_val = "cheapest"
+            elif any(w in lower for w in ["best rated", "highest rated", "rating"]):
+                sort_val = "rating"
+
+            loc_pref = None
+            if any(w in lower for w in ["city center", "closest to the city center", "closest to city center", "central"]):
+                loc_pref = "city center"
+            elif any(w in lower for w in ["beach", "beachside"]):
+                loc_pref = "beach"
+
+            if dest:
+                ctx = CanonicalTravelContext(
+                    intent="hotel_search",
+                    destination=dest,
+                    travel_date="tomorrow",
+                    budget=budget,
+                    sort_by=sort_val,
+                    location_preference=loc_pref,
+                    guests=1,
+                    request_type="NEW",
+                    previous_summary=prev_summary,
+                )
+                ctx.updated_summary = ctx.to_readable_summary()
+                return ctx
+
+        # 5. TRUE SHORT TRAVEL FOLLOW-UP ANSWERS (ONLY WHEN PRIOR TRAVEL CONTEXT EXISTS)
+        # (e.g. 'Tomorrow', 'Two', 'Okay. Search flights', 'Which one is cheapest?')
+        if prior_context and prior_context.intent in ["flight_search", "train_search", "hotel_search", "bus_search", "route_search", "general_travel"]:
             is_date_answer = bool(re.search(r"\b(?:tomorrow|today|tonight|day after tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|next week|this weekend)\b", lower))
-            is_mode_switch = bool(re.search(r"\b(?:search flights?|find flights?|flights?|fly|search trains?|find trains?|trains?|rail|search hotels?|find hotels?|hotels?|bus(?:es)?)\b", lower))
             is_filter_answer = bool(re.search(r"\b(?:cheapest|cheaper|lowest price|least expensive|best rated|highest rated|morning|evening|afternoon|night|closest|city center)\b", lower))
             is_passenger_answer = bool(re.search(r"\b(?:two|three|four|\d+)\s*(?:passengers?|seats?|people|persons?)?\b", lower))
+            is_standalone_mode_switch = any(w in clean_text.split() for w in ["flight", "flights", "fly", "train", "trains", "hotel", "hotels", "bus", "buses"]) and not exp_orig and not exp_dest
 
-            if is_date_answer or is_mode_switch or is_filter_answer or is_passenger_answer or self._is_follow_up_phrase(lower):
+            if is_date_answer or is_filter_answer or is_passenger_answer or is_standalone_mode_switch or self._is_follow_up_phrase(lower):
                 updated = prior_context.model_copy()
                 updated.request_type = "FOLLOW_UP"
                 updated.previous_summary = prev_summary
                 updated.needs_clarification = False
                 updated.clarification_question = None
 
-                # Handle Mode Switch
+                # Handle Standalone Mode Switch
                 if "flight" in lower or "fly" in lower:
                     updated.intent = "flight_search"
                 elif "train" in lower or "rail" in lower:
@@ -298,7 +514,7 @@ class GeminiService:
                     num_map = {"two": 2, "three": 3, "four": 4}
                     updated.passengers = num_map.get(val_str, int(val_str) if val_str and val_str.isdigit() else updated.passengers)
 
-                # Check if user explicitly mentioned a new city
+                # Check if user mentioned a new destination without route keywords
                 new_dest = self._extract_known_destination(user_message)
                 if new_dest and not any(w in lower for w in ["flight", "train", "hotel"]):
                     if not updated.destination or updated.destination.lower() != new_dest.lower():
@@ -307,188 +523,9 @@ class GeminiService:
                 updated.updated_summary = updated.to_readable_summary()
                 return updated
 
-        # 3. CONVERSATIONAL / GENERAL (NON-TRAVEL)
-        general_conversational_phrases = [
-            "how are you", "how are you doing", "how do you do", "how is it going", "hows it going", "whats up",
-            "what can you do", "what are your capabilities", "what can you help with", "who are you",
-            "what is your name", "who made you", "who created you", "tell me about yourself",
-            "thanks", "thank you", "thanks a lot", "thank you so much", "thx",
-            "bye", "goodbye", "see you", "see ya", "talk to you later", "good night",
-            "tell me a joke", "joke", "make me laugh", "tell me something funny",
-            "what is python", "python", "what is machine learning", "explain machine learning", "machine learning",
-            "what is ai", "what is an llm", "tell me about coding", "what is programming",
-            "what is the capital of france", "capital of france",
-            "what is the weather like", "whats the weather like", "whats the weather", "what is the weather",
-            "what time is it", "whats the time", "what day is it",
-            "help", "i need help",
-            "what is javascript", "what is java", "what is html", "what is css",
-            "what is react", "what is nodejs", "what is sql", "what is a database",
-            "tell me something", "tell me something interesting", "fun fact",
-            "how does ai work", "how does machine learning work", "explain ai",
-            "what are you", "are you a robot", "are you human", "are you real",
-            "sing a song", "tell me a story", "recite a poem",
-            "good job", "well done", "that was helpful", "you are great", "youre great",
-            "never mind", "forget it", "cancel",
-        ]
-        if not has_travel_cues:
-            is_exact_general = any(clean_text == p for p in general_conversational_phrases)
-            if is_exact_general:
-                ctx = CanonicalTravelContext(
-                    intent="conversational",
-                    request_type="NEW",
-                    previous_summary=None,
-                )
-                ctx.updated_summary = "Conversational"
-                return ctx
-
-        # Check for vague change follow-up ("Change it")
-        if lower in ["change it", "change that", "modify it", "change"]:
-            if prior_context and prior_context.intent in ["hotel_search", "flight_search", "train_search", "route_search", "bus_search"]:
-                return CanonicalTravelContext(
-                    intent=prior_context.intent,
-                    origin=prior_context.origin,
-                    destination=prior_context.destination,
-                    travel_date=prior_context.travel_date,
-                    time_constraint=prior_context.time_constraint,
-                    passengers=prior_context.passengers,
-                    budget=prior_context.budget,
-                    sort_by=prior_context.sort_by,
-                    location_preference=prior_context.location_preference,
-                    request_type="FOLLOW_UP",
-                    previous_summary=prev_summary,
-                    updated_summary=prev_summary,
-                    needs_clarification=True,
-                    clarification_question="What would you like to change in your travel search?",
-                )
-            return CanonicalTravelContext(
-                intent="unclear",
-                request_type="NEW",
-                needs_clarification=True,
-                clarification_question="Sure — what would you like me to help you find?",
-            )
-
-        # 4. UNCLEAR / AMBIGUOUS (when no prior travel context exists)
-        unclear_phrases = [
-            "show me some", "show some", "what about there", "which one", "which one is best",
-            "show more", "tell me more", "show me", "options", "find some", "look up"
-        ]
-        if not prior_context and clean_text in unclear_phrases:
-            return CanonicalTravelContext(
-                intent="unclear",
-                request_type="NEW",
-                needs_clarification=True,
-                clarification_question="Sure — what would you like me to help you find?",
-            )
-
-        # 5. ACTIVE HOTEL FOLLOW-UP
-        is_hotel_follow_up = prior_context and prior_context.intent == "hotel_search" and (
-            not any(w in lower for w in [
-                "best places", "what to see", "attractions", "sightseeing", "places to visit",
-                "what should i visit", "what should i see", "visit", "flight", "flights",
-                "train", "trains", "route", "bus", "pack", "packing", "itinerary", "plan a", "plan my"
-            ]) and (
-                any(w in lower for w in [
-                    "cheapest", "cheaper", "lowest price", "least expensive", "low price", "cheaper ones", "cheapest ones",
-                    "closest", "city center", "central", "closest to the city center", "closest to city center",
-                    "more", "show me more", "more options", "other options", "show cheaper", "show cheaper ones",
-                    "best hotel", "best hotels", "rating", "best rated", "highest rated", "top rated", "which one is best",
-                    "second option", "show the second option", "first option", "third option",
-                    "under", "below", "less than", "budget", "room", "suite", "only hotels", "only hotel"
-                ]) or (
-                    self._is_follow_up_phrase(lower)
-                )
-            )
-        )
-
-        if is_hotel_follow_up:
-            updated = prior_context.model_copy()
-            updated.request_type = "FOLLOW_UP"
-            updated.previous_summary = prev_summary
-
-            # Check if user explicitly named a new destination
-            new_dest = self._extract_known_destination(user_message)
-            if new_dest and new_dest.lower() != (prior_context.destination or "").lower():
-                updated.destination = new_dest
-            else:
-                updated.destination = prior_context.destination
-
-            # Check sort_by
-            if any(w in lower for w in ["cheapest", "cheaper", "lowest price", "least expensive", "low price"]):
-                updated.sort_by = "cheapest"
-            elif any(w in lower for w in ["best rated", "highest rated", "rating", "best"]):
-                updated.sort_by = "rating"
-
-            # Check location preference
-            if any(w in lower for w in ["city center", "closest to the city center", "closest to city center", "central", "center"]):
-                updated.location_preference = "city center"
-            elif any(w in lower for w in ["beach", "beachside", "near beach"]):
-                updated.location_preference = "beach"
-            elif any(w in lower for w in ["station", "near station", "railway station"]):
-                updated.location_preference = "near station"
-
-            # Check budget
-            budget_match = re.search(r"\b(?:under|below|less than|budget of|budget)\s*₹?\s*(\d+)", lower)
-            if budget_match:
-                updated.budget = float(budget_match.group(1))
-
-            updated.updated_summary = updated.to_readable_summary()
-            return updated
-
-        # 4b. Active Flight / Train / Route Follow-up
-        is_transit_follow_up = prior_context and prior_context.intent in ["flight_search", "train_search", "route_search"] and (
-            self._is_follow_up_phrase(lower) or
-            any(w in lower for w in [
-                "tomorrow", "today", "day after tomorrow", "morning", "evening", "afternoon", "night",
-                "cheaper", "cheapest", "faster", "fastest", "what about tomorrow", "what about today",
-                "what about evening", "what about morning", "second option", "first option", "third option",
-                "for two", "for 2", "for 3", "for three", "two people", "3 passengers"
-            ])
-        ) and not any(w in lower for w in ["hotel", "hotels", "stay", "resort", "pack", "packing", "itinerary", "places to visit"])
-
-        if is_transit_follow_up:
-            # CRITICAL: Check if the user is providing NEW explicit origin/destination
-            # If they mention specific cities/stations, this is a NEW request, not a follow-up
-            has_explicit_route = bool(re.search(
-                r"\b(?:from\s+[A-Za-z]+\s+to\s+[A-Za-z]+|[A-Za-z]+\s+to\s+[A-Za-z]+\s+(?:trains?|flights?|bus))\b",
-                user_message, re.IGNORECASE
-            ))
-            if has_explicit_route:
-                # Fall through to NEW request handler — do NOT inherit stale context
-                pass
-            else:
-                updated = prior_context.model_copy()
-                updated.request_type = "FOLLOW_UP"
-                updated.previous_summary = prev_summary
-
-                if "day after tomorrow" in lower:
-                    updated.travel_date = "day after tomorrow"
-                elif "tomorrow" in lower:
-                    updated.travel_date = "tomorrow"
-                elif "today" in lower or "tonight" in lower:
-                    updated.travel_date = "today"
-
-                if "evening" in lower:
-                    updated.time_constraint = "evening"
-                elif "morning" in lower:
-                    updated.time_constraint = "morning"
-                elif "afternoon" in lower:
-                    updated.time_constraint = "afternoon"
-                elif "night" in lower:
-                    updated.time_constraint = "night"
-
-                pass_match = re.search(r"\b(?:for\s+(\d+|two|three|four)|(\d+|two|three|four)\s+(?:people|persons?|passengers?|seats?))\b", lower)
-                if pass_match:
-                    val_str = pass_match.group(1) or pass_match.group(2)
-                    num_map = {"two": 2, "three": 3, "four": 4}
-                    updated.passengers = num_map.get(val_str, int(val_str) if val_str and val_str.isdigit() else updated.passengers)
-
-                updated.updated_summary = updated.to_readable_summary()
-                return updated
-
-        # 5. EXPLICIT TRAVEL REQUESTS
-
-        # 5a. Destination Info
-        if any(w in lower for w in ["best places", "what to see", "attractions", "sightseeing", "places to visit", "what should i visit", "what should i see"]):
+        # 6. DESTINATION INFO / TOURISM (Strictly when user asks for sightseeing / attractions without travel search mode)
+        has_search_mode = any(w in lower for w in ["flight", "flights", "fly", "train", "trains", "rail", "hotel", "hotels", "bus", "ticket", "tickets"])
+        if not has_search_mode and any(w in lower for w in ["best places", "what to see", "attractions", "sightseeing", "places to visit", "what should i visit", "what should i see"]):
             dest = self._extract_known_destination(user_message)
             if not dest:
                 if "there" in lower and prior_context and prior_context.destination:
@@ -511,244 +548,49 @@ class GeminiService:
             ctx.updated_summary = ctx.to_readable_summary()
             return ctx
 
-        # 5b. Hotel Search
-        if any(w in lower for w in ["hotel", "hotels", "stay", "resort", "room", "accommodation", "places to stay"]):
-            budget = None
-            budget_match = re.search(r"\b(?:under|below|less than|budget of|budget)\s*₹?\s*(\d+)", lower)
-            if budget_match:
-                budget = float(budget_match.group(1))
-
-            sort_val = None
-            if any(w in lower for w in ["cheapest", "cheaper", "lowest price", "least expensive"]):
-                sort_val = "cheapest"
-            elif any(w in lower for w in ["best rated", "highest rated", "rating"]):
-                sort_val = "rating"
-
-            loc_pref = None
-            if any(w in lower for w in ["city center", "closest to the city center", "closest to city center", "central"]):
-                loc_pref = "city center"
-            elif any(w in lower for w in ["beach", "beachside"]):
-                loc_pref = "beach"
-
-            dest = self._extract_known_destination(user_message)
-            if not dest:
-                m_prep = re.search(r"\b(?:in|at|for|near|around|by)\s+([A-Za-z\s]+?)(?:\s+(?:under|below|less than|budget|tomorrow|today|with|for|\d+)|\.|\?|$)", user_message, re.IGNORECASE)
-                if m_prep:
-                    cand = m_prep.group(1).strip()
-                    if cand.lower() not in ["a", "the", "my", "our", "there"]:
-                        dest = cand.title()
-                if not dest:
-                    m_prefix = re.search(r"\b([A-Za-z]+)\s+hotels?\b", user_message, re.IGNORECASE)
-                    if m_prefix and m_prefix.group(1).lower() not in ["find", "search", "show", "get", "book", "good", "best", "cheap"]:
-                        dest = m_prefix.group(1).title()
-
-            if not dest:
-                if "there" in lower and prior_context and prior_context.destination:
-                    dest = prior_context.destination
-                elif prior_context and prior_context.destination:
-                    dest = prior_context.destination
-
-            is_follow = prior_context is not None and prior_context.intent == "hotel_search" and (
-                dest is None or (prior_context.destination and dest.lower() == prior_context.destination.lower())
-            )
-
-            ctx = CanonicalTravelContext(
-                intent="hotel_search",
-                destination=dest or (prior_context.destination if prior_context else None),
-                travel_date="tomorrow",
-                budget=budget,
-                sort_by=sort_val,
-                location_preference=loc_pref,
-                guests=1,
-                request_type="FOLLOW_UP" if is_follow else "NEW",
-                previous_summary=prev_summary,
-            )
-            ctx.updated_summary = ctx.to_readable_summary()
-            return ctx
-
-        # 5c. Flight Search
-        if any(w in lower for w in ["flight", "flights", "fly", "plane", "airline"]):
-            orig = None
-            dest = None
-            m_from_to = re.search(r"\bfrom\s+([A-Za-z\s]+?)\s+to\s+([A-Za-z\s]+?)(?:\s+(?:tomorrow|today|on|in|this|next|morning|evening|afternoon|night)|\.|\?|$)", user_message, re.IGNORECASE)
-            if m_from_to:
-                orig = m_from_to.group(1).strip().title()
-                dest = m_from_to.group(2).strip().title()
-            else:
-                # Try "<CITY> to <CITY>" pattern
-                city_to_city = re.search(
-                    r"\b([A-Za-z][A-Za-z\s\.]{1,25}?)\s+to\s+([A-Za-z][A-Za-z\s\.]{1,25}?)(?:\s+(?:flights?|fly|tomorrow|today|tonight|on|in)|[\.,\?!]|$)",
-                    user_message,
-                    re.IGNORECASE,
-                )
-                if city_to_city:
-                    orig = city_to_city.group(1).strip().title()
-                    dest = city_to_city.group(2).strip().title()
-                else:
-                    dest_cand = self._extract_known_destination(user_message)
-                    if dest_cand:
-                        dest = dest_cand
-
-            time_val = "evening" if "evening" in lower else ("morning" if "morning" in lower else ("afternoon" if "afternoon" in lower else ("night" if "night" in lower else "any")))
-            date_val = "tomorrow" if "tomorrow" in lower else ("today" if "today" in lower else "tomorrow")
-
-            ctx = CanonicalTravelContext(
-                intent="flight_search",
-                origin=orig,
-                destination=dest,
-                travel_date=date_val,
-                time_constraint=time_val,
-                passengers=1,
-                request_type="NEW",
-                previous_summary=prev_summary,
-            )
-            ctx.updated_summary = ctx.to_readable_summary()
-            return ctx
-
-        # 5d. Train Search
-        is_train = any(w in lower for w in ["train", "trains", "railway", "irctc", "rail", "shatabdi", "rajdhani", "vande bharat"])
-        if is_train:
-            norm = railway_normalizer.normalize(user_message, prior_intent=None)
-            orig = norm.intent.origin
-            dest = norm.intent.destination
-
-            # Fallback: Try "<CITY> to <CITY>" pattern directly on user message (without requiring "from")
-            if not orig or not dest:
-                city_to_city = re.search(
-                    r"\b([A-Za-z][A-Za-z\s\.]{1,25}?)\s+to\s+([A-Za-z][A-Za-z\s\.]{1,25}?)(?:\s+(?:trains?|flights?|bus(?:es)?|tomorrow|today|tonight|in\s+the|at|on|for|this|next|morning|evening|afternoon|night)|[\.,\?!]|$)",
-                    user_message,
-                    re.IGNORECASE,
-                )
-                if city_to_city:
-                    if not orig:
-                        cand = city_to_city.group(1).strip()
-                        resolved = railway_normalizer.resolve_station_code(cand)
-                        if resolved or self._extract_known_destination(cand):
-                            orig = resolved or cand.title()
-                    if not dest:
-                        cand = city_to_city.group(2).strip()
-                        resolved = railway_normalizer.resolve_station_code(cand)
-                        if resolved or self._extract_known_destination(cand):
-                            dest = resolved or cand.title()
-
-            # Fallback: Try known destination extraction from the full message
-            if not dest:
-                dest = self._extract_known_destination(user_message)
-            if not orig:
-                orig_cand = self._extract_known_destination(user_message)
-                if orig_cand and orig_cand != dest:
-                    orig = orig_cand
-
-            # If still missing critical entities, ask for clarification
-            if not orig and not dest:
+        # 7. SINGLE CITY + MODE (Clarification / Partial Search)
+        # e.g. "Flights to Mumbai", "Train from Kolkata"
+        single_city = self._extract_known_destination(user_message)
+        if single_city:
+            if any(w in lower for w in ["flight", "flights", "fly", "plane"]):
+                is_to = bool(re.search(r"\bto\s+", lower))
+                dest = single_city if is_to else None
+                orig = single_city if not is_to else (prior_context.origin if prior_context else None)
                 ctx = CanonicalTravelContext(
-                    intent="train_search",
+                    intent="flight_search",
+                    origin=orig,
+                    destination=dest,
+                    travel_date=date_val,
+                    time_constraint=time_val,
                     request_type="NEW",
-                    needs_clarification=True,
-                    clarification_question="I'd love to help you find trains! Which cities are you traveling between?",
                     previous_summary=prev_summary,
                 )
+                if not orig or not dest:
+                    ctx.needs_clarification = True
+                    ctx.clarification_question = f"Where will you be {'departing from' if not orig else 'flying to'} for your flight?"
                 ctx.updated_summary = ctx.to_readable_summary()
                 return ctx
 
-            ctx = CanonicalTravelContext(
-                intent="train_search",
-                origin=orig,
-                destination=dest,
-                travel_date=norm.intent.date or "tomorrow",
-                time_constraint=norm.intent.time_constraint or "any",
-                passengers=norm.intent.passengers or 1,
-                request_type="NEW",
-                previous_summary=prev_summary,
-            )
-            if not orig or not dest:
-                ctx.needs_clarification = True
-                ctx.clarification_question = f"I found {'the origin' if orig else 'no origin'} and {'the destination' if dest else 'no destination'}. Could you clarify {'your departure city' if not orig else 'your destination city'}?"
-            ctx.updated_summary = ctx.to_readable_summary()
-            return ctx
-
-        # 5e. Bus / Route Search
-        if any(w in lower for w in ["bus", "buses", "volvo", "how do i get", "how to get", "how do i travel", "how to travel", "route", "how do i reach", "how to reach", "travel from"]):
-            orig = None
-            dest = None
-            m_from_to = re.search(r"\bfrom\s+([A-Za-z\s]+?)\s+to\s+([A-Za-z\s]+?)(?:\s+(?:tomorrow|today|by|on|in)|\.|\?|$)", user_message, re.IGNORECASE)
-            if m_from_to:
-                orig = m_from_to.group(1).strip().title()
-                dest = m_from_to.group(2).strip().title()
-            else:
-                # Try "<CITY> to <CITY>" pattern
-                city_to_city = re.search(
-                    r"\b([A-Za-z][A-Za-z\s\.]{1,25}?)\s+to\s+([A-Za-z][A-Za-z\s\.]{1,25}?)(?:\s+(?:bus(?:es)?|tomorrow|today|tonight|by|on|in)|[\.,\?!]|$)",
-                    user_message,
-                    re.IGNORECASE,
+            if any(w in lower for w in ["train", "trains", "railway", "irctc", "rail"]):
+                is_to = bool(re.search(r"\bto\s+", lower))
+                dest = single_city if is_to else None
+                orig = single_city if not is_to else (prior_context.origin if prior_context else None)
+                ctx = CanonicalTravelContext(
+                    intent="train_search",
+                    origin=orig,
+                    destination=dest,
+                    travel_date=date_val,
+                    time_constraint=time_val,
+                    request_type="NEW",
+                    previous_summary=prev_summary,
                 )
-                if city_to_city:
-                    orig = city_to_city.group(1).strip().title()
-                    dest = city_to_city.group(2).strip().title()
+                if not orig or not dest:
+                    ctx.needs_clarification = True
+                    ctx.clarification_question = f"Which city will you be {'departing from' if not orig else 'traveling to'}?"
+                ctx.updated_summary = ctx.to_readable_summary()
+                return ctx
 
-            ctx = CanonicalTravelContext(
-                intent="route_search",
-                origin=orig,
-                destination=dest,
-                request_type="NEW",
-                previous_summary=prev_summary,
-            )
-            ctx.updated_summary = ctx.to_readable_summary()
-            return ctx
-
-        # 5f. Itinerary Planning
-        if any(w in lower for w in ["itinerary", "plan a trip", "plan my trip", "planning a trip"]):
-            dest = self._extract_known_destination(user_message)
-            if not dest:
-                m = re.search(r"\b(?:trip to|trip for|visit to|for|to|in)\s+([A-Za-z\s]+?)(?:\s+(?:trip|vacation|tour|holiday)|\.|\?|$)", user_message, re.IGNORECASE)
-                if m:
-                    cand = m.group(1).strip()
-                    if cand.lower() not in ["a", "the", "three day", "3 day", "my", "our"]:
-                        dest = cand.title()
-            if not dest and prior_context and prior_context.destination:
-                dest = prior_context.destination
-
-            ctx = CanonicalTravelContext(
-                intent="itinerary_planning",
-                destination=dest or "Goa",
-                travel_date="tomorrow",
-                request_type="NEW",
-                previous_summary=prev_summary,
-            )
-            ctx.updated_summary = ctx.to_readable_summary()
-            return ctx
-
-        # 5g. Travel Advice / Packing
-        if any(w in lower for w in ["pack", "packing", "what to wear", "clothes", "clothing"]):
-            dest = self._extract_known_destination(user_message)
-            if not dest and prior_context and prior_context.destination:
-                dest = prior_context.destination
-
-            ctx = CanonicalTravelContext(
-                intent="travel_advice",
-                destination=dest or "Kashmir",
-                request_type="NEW",
-                previous_summary=prev_summary,
-            )
-            ctx.updated_summary = ctx.to_readable_summary()
-            return ctx
-
-        # 5h. Best time to visit
-        if any(w in lower for w in ["best time to visit", "when to visit", "when should i visit", "season to visit"]):
-            dest = self._extract_known_destination(user_message)
-            if not dest and prior_context and prior_context.destination:
-                dest = prior_context.destination
-
-            ctx = CanonicalTravelContext(
-                intent="general_travel",
-                destination=dest or "Sikkim",
-                request_type="NEW",
-                previous_summary=prev_summary,
-            )
-            ctx.updated_summary = ctx.to_readable_summary()
-            return ctx
-
-        # 6. DEFAULT: CONVERSATIONAL (Never default unknown inputs to train_search or travel!)
+        # 8. DEFAULT: CONVERSATIONAL
         ctx = CanonicalTravelContext(
             intent="conversational",
             request_type="NEW",
@@ -858,7 +700,23 @@ class GeminiService:
 
                 extracted_ctx.updated_summary = extracted_ctx.to_readable_summary()
 
-                # Safety override: if deterministic says conversational but Gemini says travel,
+                # Safety override 1: If deterministic detected an explicit route or hotel search,
+                # ensure Gemini does not downgrade it to destination_info, conversational, or greeting
+                if fallback_ctx.intent in ["flight_search", "train_search", "hotel_search", "bus_search", "route_search"] and fallback_ctx.request_type == "NEW":
+                    if extracted_ctx.intent not in ALLOWED_TOOL_INTENTS or extracted_ctx.intent == "destination_info":
+                        logger.info(
+                            f"[ROUTE OVERRIDE] Overriding Gemini '{extracted_ctx.intent}' with explicit deterministic travel request: '{fallback_ctx.intent}' ({fallback_ctx.origin} -> {fallback_ctx.destination})"
+                        )
+                        return fallback_ctx
+                    # Ensure explicit new origin/destination from user message are kept
+                    if fallback_ctx.origin and (not extracted_ctx.origin or extracted_ctx.origin != fallback_ctx.origin):
+                        extracted_ctx.origin = fallback_ctx.origin
+                    if fallback_ctx.destination and (not extracted_ctx.destination or extracted_ctx.destination != fallback_ctx.destination):
+                        extracted_ctx.destination = fallback_ctx.destination
+                    extracted_ctx.intent = fallback_ctx.intent
+                    extracted_ctx.request_type = "NEW"
+
+                # Safety override 2: if deterministic says conversational/greeting but Gemini says travel for non-travel short text,
                 # prefer conversational for short utterances to prevent false travel routing
                 if (
                     fallback_ctx.intent in ["conversational", "greeting"]
