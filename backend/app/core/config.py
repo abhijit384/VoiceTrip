@@ -41,8 +41,8 @@ class Settings(BaseSettings):
     SUPABASE_PUBLISHABLE_KEY: Optional[str] = None
     SUPABASE_SECRET_KEY: Optional[str] = None
 
-    # Simulation / Tool Stress Test
-    TOOL_ARTIFICIAL_DELAY_SECONDS: float = 5.0
+    # Simulation / Tool Stress Test (Set to >0 only when running interruption stress tests)
+    TOOL_ARTIFICIAL_DELAY_SECONDS: float = 0.0
 
     model_config = SettingsConfigDict(
         env_file=(

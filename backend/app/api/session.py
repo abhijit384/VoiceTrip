@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from app.services.gemini_service import GeminiService, ToolCall
 from app.models.travel import CanonicalTravelContext, TravelIntent
 from app.services.railway_normalizer import railway_normalizer
-
+from app.services.transcript_corrector import transcript_corrector, CorrectionItem
 from app.services.interruption_manager import interruption_manager
 
 logger = logging.getLogger("session-chat")
@@ -48,6 +48,10 @@ class ChatResponse(BaseModel):
     generation_id: str
     response_type: str  # "text" or "tool_call"
     text: Optional[str] = None
+    raw_transcript: Optional[str] = None
+    corrected_transcript: Optional[str] = None
+    was_corrected: bool = False
+    corrections: List[CorrectionItem] = []
     tool_calls: List[ToolCall] = []
     canonical_context: Optional[CanonicalTravelContext] = None
     intent: Optional[TravelIntent] = None
@@ -80,17 +84,25 @@ async def process_user_transcript(payload: ChatRequest):
             generation_id=generation_id,
             response_type="text",
             text=None,
+            raw_transcript=raw_msg,
+            corrected_transcript=raw_msg,
+            was_corrected=False,
+            corrections=[],
             tool_calls=[],
             canonical_context=prior_context,
             latency_ms=0,
             model="validation_gate_blocked",
         )
 
-    # Phonetic normalization for known station aliases (if relevant)
-    norm_result = railway_normalizer.normalize(raw_msg, prior_intent=None)
+    # Step 1: Safe Deterministic Transcript Correction & Normalization Layer
+    correction_res = transcript_corrector.correct_transcript(raw_msg)
+    corrected_msg = correction_res.corrected_transcript
+
+    # Step 2: Railway domain alias casing & station resolver
+    norm_result = railway_normalizer.normalize(corrected_msg, prior_intent=None)
     normalized_msg = norm_result.normalized_text
 
-    # Append user message to conversation history
+    # Append canonical user message to conversation history
     sessions[session_id].append({"role": "user", "content": normalized_msg})
 
     # Limit conversation history to prevent prompt bloat (last 8 messages = ~4 turns)
@@ -154,6 +166,7 @@ async def process_user_transcript(payload: ChatRequest):
         f"TURN ID:                      {len(sessions[session_id]) // 2 + 1}\n"
         f"GENERATION ID:                {generation_id}\n"
         f"RAW USER TRANSCRIPT:          {raw_msg}\n"
+        f"CORRECTED TRANSCRIPT:         {normalized_msg} (changed={correction_res.was_corrected})\n"
         f"INTENT CLASSIFIED:            {updated_context.intent if updated_context else 'None'}\n"
         f"CURRENT CONVERSATION CONTEXT: {len(sessions[session_id])} turns in session '{session_id}'\n"
         f"CURRENT TRAVEL CONTEXT:       {json.dumps(updated_context.model_dump()) if updated_context else 'None'}\n"
@@ -187,6 +200,10 @@ async def process_user_transcript(payload: ChatRequest):
             generation_id=generation_id,
             response_type="tool_call",
             text=None,
+            raw_transcript=raw_msg,
+            corrected_transcript=normalized_msg,
+            was_corrected=correction_res.was_corrected,
+            corrections=correction_res.corrections,
             tool_calls=llm_res.tool_calls,
             canonical_context=updated_context,
             intent=llm_res.intent,
@@ -201,12 +218,75 @@ async def process_user_transcript(payload: ChatRequest):
             generation_id=generation_id,
             response_type="text",
             text=content,
+            raw_transcript=raw_msg,
+            corrected_transcript=normalized_msg,
+            was_corrected=correction_res.was_corrected,
+            corrections=correction_res.corrections,
             tool_calls=[],
             canonical_context=updated_context,
             intent=llm_res.intent,
             latency_ms=llm_res.latency_ms,
             model=llm_res.model,
         )
+
+
+def _compact_tool_results_for_voice(tool_name: str, results: Any) -> Any:
+    """Compacts tool result payload down to essential voice-summary fields to maximize LLM speed."""
+    if not isinstance(results, dict):
+        return results
+
+    if tool_name == "search_trains" and "trains" in results:
+        trains = results.get("trains", [])[:4]
+        return {
+            "total_found": len(results.get("trains", [])),
+            "origin": results.get("origin"),
+            "destination": results.get("destination"),
+            "trains": [
+                {
+                    "name": t.get("name"),
+                    "departure": t.get("departure"),
+                    "arrival": t.get("arrival"),
+                    "price": t.get("price"),
+                }
+                for t in trains if isinstance(t, dict)
+            ],
+        }
+
+    if tool_name == "search_flights" and "flights" in results:
+        flights = results.get("flights", [])[:4]
+        return {
+            "total_found": len(results.get("flights", [])),
+            "origin": results.get("origin"),
+            "destination": results.get("destination"),
+            "flights": [
+                {
+                    "flight_number": f.get("flight_number"),
+                    "airline": f.get("airline"),
+                    "departure": f.get("departure"),
+                    "arrival": f.get("arrival"),
+                    "price": f.get("price"),
+                }
+                for f in flights if isinstance(f, dict)
+            ],
+        }
+
+    if tool_name == "search_hotels" and "hotels" in results:
+        hotels = results.get("hotels", [])[:4]
+        return {
+            "total_found": len(results.get("hotels", [])),
+            "destination": results.get("destination"),
+            "hotels": [
+                {
+                    "name": h.get("name"),
+                    "price_formatted": h.get("price_formatted"),
+                    "rating": h.get("rating"),
+                    "location": h.get("location"),
+                }
+                for h in hotels if isinstance(h, dict)
+            ],
+        }
+
+    return results
 
 
 @router.post("/tool_result", response_model=ChatResponse)
@@ -229,7 +309,10 @@ async def process_tool_result(payload: ToolResultRequest):
                 tool_call_id = calls[0].get("id", "call_1")
                 break
 
-    tool_summary = json.dumps(payload.tool_results) if isinstance(payload.tool_results, (dict, list)) else str(payload.tool_results)
+    # Compact payload for maximum LLM speed
+    compact_results = _compact_tool_results_for_voice(payload.tool_name, payload.tool_results)
+    tool_summary = json.dumps(compact_results)
+
     sessions[session_id].append({
         "role": "tool",
         "tool_call_id": tool_call_id,
@@ -250,7 +333,6 @@ async def process_tool_result(payload: ToolResultRequest):
     logger.info(
         f"\n{'='*70}\n"
         f"[DEVELOPER AUDIT] TOOL RESULT RETURNED:      '{payload.tool_name}'\n"
-        f"[DEVELOPER AUDIT] TOOL RESULT PAYLOAD:       {payload.tool_results}\n"
         f"[DEVELOPER AUDIT] FINAL RESPONSE (RIME TTS): '{content}'\n"
         f"{'='*70}"
     )

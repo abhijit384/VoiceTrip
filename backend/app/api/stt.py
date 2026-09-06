@@ -6,6 +6,7 @@ from pydantic import BaseModel
 import httpx
 from app.core.config import settings
 from app.services.railway_normalizer import railway_normalizer
+from app.services.transcript_corrector import transcript_corrector
 from app.core.railway_vocabulary import DEEPGRAM_KEYTERMS
 
 logger = logging.getLogger("stt-api")
@@ -104,8 +105,9 @@ async def transcribe_audio_blob(
                     raw_transcript = alts[0].get("transcript", "").strip()
                     confidence = alts[0].get("confidence", 0.0)
 
-            # Apply domain phonetic normalization (e.g. NJP -> New Jalpaiguri, Howrah -> HWH)
-            norm_res = railway_normalizer.normalize(raw_transcript)
+            # Apply safe travel autocorrection & phonetic normalization
+            corr_res = transcript_corrector.correct_transcript(raw_transcript)
+            norm_res = railway_normalizer.normalize(corr_res.corrected_transcript)
             final_transcript = norm_res.normalized_text
 
             latency_ms = int((time.time() - t_start) * 1000)

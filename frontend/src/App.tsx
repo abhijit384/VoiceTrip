@@ -152,7 +152,7 @@ export default function App() {
     setShowWelcomeModal(false);
   };
 
-  // Process finalized user speech through Gemini -> Tool -> Rime TTS (Sequential Pipeline)
+  // Process finalized user speech through Gemini -> Tool -> Rime TTS (Unblocked Fast Path)
   const processTurn = useCallback(
     async (finalText: string, targetGen: string) => {
       const cleanText = finalText.trim();
@@ -165,23 +165,27 @@ export default function App() {
       setErrorMessage(null);
       setUserTranscript(cleanText);
       setPipelineState('thinking');
-      setStatusMessage('Thinking...');
+      setStatusMessage('Finding travel options...');
       setGeminiStatus('PENDING');
 
-      // Record User message in history
+      const userTurnId = `turn_${Date.now()}_user_${targetGen}`;
+      // Initial user message record in history
       setTurns((prev) => [
         ...prev,
         {
-          id: `turn_${Date.now()}_user_${targetGen}`,
+          id: userTurnId,
           generationId: targetGen,
           sender: 'user',
           text: cleanText,
+          rawTranscript: cleanText,
+          correctedTranscript: cleanText,
+          wasCorrected: false,
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         },
       ]);
 
       try {
-        console.log(`[LLM] Calling Gemini 3.6 Flash with prompt: "${cleanText}" (gen: ${targetGen})`);
+        console.log(`[LLM] Calling /api/chat with prompt: "${cleanText}" (gen: ${targetGen})`);
         const res = await fetch(`${getApiBase()}/api/chat`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -205,12 +209,35 @@ export default function App() {
           return;
         }
 
+        const rawSpeech = data.raw_transcript || cleanText;
+        const correctedSpeech = data.corrected_transcript || cleanText;
+        const wasCorr = Boolean(data.was_corrected);
+
+        // Update user transcript & turn history with autocorrection info
+        if (wasCorr && correctedSpeech) {
+          setUserTranscript(correctedSpeech);
+          setTurns((prev) =>
+            prev.map((t) =>
+              t.id === userTurnId
+                ? {
+                    ...t,
+                    text: correctedSpeech,
+                    rawTranscript: rawSpeech,
+                    correctedTranscript: correctedSpeech,
+                    wasCorrected: true,
+                    corrections: data.corrections || [],
+                  }
+                : t
+            )
+          );
+        }
+
         const ctx = data.canonical_context;
         if (ctx) {
           setCanonicalContext(ctx);
         }
 
-        // Case A: Direct Text Response
+        // Case A: Direct Conversational / Non-travel Text Response
         if (data.response_type === 'text' && data.text) {
           const spoken = data.text;
           setAiTranscript(spoken);
@@ -223,7 +250,7 @@ export default function App() {
             turnId: generationCount,
             generationId: targetGen,
             previousContext: ctx?.previous_summary || null,
-            userTranscript: cleanText,
+            userTranscript: correctedSpeech,
             requestType: ctx?.request_type || 'NEW',
             mergedContext: ctx,
             toolSelected: 'None (Conversational/Direct Text)',
@@ -243,21 +270,15 @@ export default function App() {
             },
           ]);
 
-          setPipelineState('synthesizing');
-          setStatusMessage('Preparing voice...');
-
           setPipelineState('speaking');
           setStatusMessage('AI Speaking...');
 
           await rimePlayer.playRimeSpeech(spoken, targetGen);
-
-          // Engage background audio monitoring for genuine speech barge-in
-          // (starts AFTER playback begins, with internal 800ms delay to prevent echo)
           recorder.startInterruptionMonitoring();
           return;
         }
 
-        // Case B: Tool Call Required (Trains, Flights, Hotels, Routes, Destination Info)
+        // Case B: Travel Tool Call Required (Trains, Flights, Hotels, Routes, Destination Info)
         if (data.response_type === 'tool_call' && data.tool_calls?.length > 0) {
           const toolCall = data.tool_calls[0];
           const toolName = toolCall?.name || 'search_trains';
@@ -300,57 +321,36 @@ export default function App() {
 
           if (activeGenerationRef.current !== targetGen) return;
 
+          // FAST PATH: Immediately render travel results on screen without waiting for TTS
           setLastToolName(toolName);
           setLastToolResults(toolData);
 
-          setPipelineState('synthesizing');
-          setStatusMessage('Preparing voice...');
+          const assistantTurnId = `turn_${Date.now()}_assistant_tool_${targetGen}`;
+          const initialSpoken =
+            toolName === 'search_trains'
+              ? `Found ${toolData.trains?.length || 0} trains between ${args.origin || toolData.origin || 'origin'} and ${args.destination || toolData.destination || 'destination'}.`
+              : toolName === 'search_flights'
+              ? `Found ${toolData.flights?.length || 0} flight options for your journey.`
+              : toolName === 'search_hotels'
+              ? `Found top accommodation options in ${args.destination || toolData.destination || 'your destination'}.`
+              : `Found travel options for your request.`;
 
-          const summaryRes = await fetch(`${getApiBase()}/api/chat/tool_result`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              session_id: 'default',
-              tool_name: toolName,
-              tool_results: toolData,
-              generation_id: targetGen,
-            }),
-          });
-
-          const summaryData = await summaryRes.json();
-          if (activeGenerationRef.current !== targetGen) return;
-
-          const spokenText = summaryData.text || 'Here are the travel options found for your journey.';
-          setAiTranscript(spokenText);
-
-          setDevAudit({
-            sessionId: data.session_id || 'default',
-            turnId: generationCount,
-            generationId: targetGen,
-            previousContext: ctx?.previous_summary || null,
-            userTranscript: cleanText,
-            requestType: ctx?.request_type || 'NEW',
-            mergedContext: ctx,
-            toolSelected: toolName,
-            toolArguments: args,
-            toolResults: toolData,
-            finalResponse: spokenText,
-          });
+          setAiTranscript(initialSpoken);
 
           setTurns((prev) => [
             ...prev,
             {
-              id: `turn_${Date.now()}_assistant_tool_${targetGen}`,
+              id: assistantTurnId,
               generationId: targetGen,
               sender: 'assistant',
-              text: spokenText,
+              text: initialSpoken,
               timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
               toolDetails: {
                 toolName,
                 params: args,
-                executionTimeMs: 120,
+                executionTimeMs: toolData.execution_time_ms || 120,
                 cancelled: false,
-                results: toolData.trains || toolData.flights || toolData.hotels || [],
+                results: toolData.trains || toolData.flights || toolData.hotels || toolData.routes || [],
                 rawResult: toolData,
               },
             },
@@ -359,11 +359,54 @@ export default function App() {
           setPipelineState('speaking');
           setStatusMessage('AI Speaking...');
 
-          await rimePlayer.playRimeSpeech(spokenText, targetGen);
+          // UNBLOCKED PARALLEL VOICE SYNTHESIS: Generate spoken summary and stream audio via Rime
+          (async () => {
+            try {
+              const summaryRes = await fetch(`${getApiBase()}/api/chat/tool_result`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  session_id: 'default',
+                  tool_name: toolName,
+                  tool_results: toolData,
+                  generation_id: targetGen,
+                }),
+              });
 
-          // Engage background audio monitoring for genuine speech barge-in
-          // (starts AFTER playback begins, with internal 800ms delay to prevent echo)
-          recorder.startInterruptionMonitoring();
+              if (!summaryRes.ok) return;
+              const summaryData = await summaryRes.json();
+              if (activeGenerationRef.current !== targetGen) return;
+
+              const spokenText = summaryData.text || initialSpoken;
+              setAiTranscript(spokenText);
+
+              // Update the assistant message in chat history with final polished spoken summary
+              setTurns((prev) =>
+                prev.map((t) => (t.id === assistantTurnId ? { ...t, text: spokenText } : t))
+              );
+
+              setDevAudit({
+                sessionId: data.session_id || 'default',
+                turnId: generationCount,
+                generationId: targetGen,
+                previousContext: ctx?.previous_summary || null,
+                userTranscript: correctedSpeech,
+                requestType: ctx?.request_type || 'NEW',
+                mergedContext: ctx,
+                toolSelected: toolName,
+                toolArguments: args,
+                toolResults: toolData,
+                finalResponse: spokenText,
+              });
+
+              // Stream/Play authoritative Rime voice output
+              await rimePlayer.playRimeSpeech(spokenText, targetGen);
+              recorder.startInterruptionMonitoring();
+            } catch (sumErr) {
+              console.error('[SUMMARY] Voice synthesis error:', sumErr);
+            }
+          })();
+
           return;
         }
 
@@ -1040,6 +1083,11 @@ export default function App() {
                     <span>{t.timestamp}</span>
                   </div>
                   <p className="leading-relaxed text-[13px]">{t.text}</p>
+                  {t.sender === 'user' && t.wasCorrected && t.rawTranscript && t.rawTranscript.toLowerCase() !== t.text.toLowerCase() && (
+                    <div className="mt-1 flex items-center gap-1.5 text-[11px] text-cyan-300/90 font-mono bg-cyan-950/80 px-2 py-0.5 rounded-md border border-cyan-800/40 w-fit">
+                      <span>✨ Heard: "{t.rawTranscript}"</span>
+                    </div>
+                  )}
                 </div>
               ))}
             </div>

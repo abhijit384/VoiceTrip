@@ -84,6 +84,10 @@ export interface ConversationTurn {
   generationId: string;
   sender: 'user' | 'assistant' | 'system';
   text: string;
+  rawTranscript?: string;
+  correctedTranscript?: string;
+  wasCorrected?: boolean;
+  corrections?: any[];
   timestamp: string;
   intent?: string;
   state?: VoiceState;

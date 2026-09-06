@@ -600,6 +600,7 @@ class ToolService:
         time_constraint: Optional[str] = "any",
         passengers: int = 1,
         generation_id: str = "gen_1",
+        delay_seconds: Optional[float] = None,
     ) -> SearchFlightsResult:
         request_id = f"req_{uuid.uuid4().hex[:8]}_flights"
         start_time = time.time()
@@ -608,7 +609,7 @@ class ToolService:
         )
 
         try:
-            delay = settings.TOOL_ARTIFICIAL_DELAY_SECONDS
+            delay = delay_seconds if delay_seconds is not None else settings.TOOL_ARTIFICIAL_DELAY_SECONDS
             if delay > 0:
                 await asyncio.sleep(delay)
 
@@ -698,6 +699,7 @@ class ToolService:
         sort_by: Optional[str] = None,
         location_preference: Optional[str] = None,
         generation_id: str = "gen_1",
+        delay_seconds: Optional[float] = None,
     ) -> SearchHotelsResult:
         request_id = f"req_{uuid.uuid4().hex[:8]}_hotels"
         start_time = time.time()
@@ -706,7 +708,7 @@ class ToolService:
         )
 
         try:
-            delay = settings.TOOL_ARTIFICIAL_DELAY_SECONDS
+            delay = delay_seconds if delay_seconds is not None else settings.TOOL_ARTIFICIAL_DELAY_SECONDS
             if delay > 0:
                 await asyncio.sleep(delay)
 
@@ -793,13 +795,14 @@ class ToolService:
         origin: str,
         destination: str,
         generation_id: str = "gen_1",
+        delay_seconds: Optional[float] = None,
     ) -> RouteOptionsResult:
         request_id = f"req_{uuid.uuid4().hex[:8]}_routes"
         start_time = time.time()
         logger.info(f"[{request_id}] get_route_options: {origin} -> {destination}, gen={generation_id}")
 
         try:
-            delay = settings.TOOL_ARTIFICIAL_DELAY_SECONDS
+            delay = delay_seconds if delay_seconds is not None else settings.TOOL_ARTIFICIAL_DELAY_SECONDS
             if delay > 0:
                 await asyncio.sleep(delay)
 
@@ -881,13 +884,14 @@ class ToolService:
         destination: str,
         category: str = "all",
         generation_id: str = "gen_1",
+        delay_seconds: Optional[float] = None,
     ) -> DestinationInfoResult:
         request_id = f"req_{uuid.uuid4().hex[:8]}_dest"
         start_time = time.time()
         logger.info(f"[{request_id}] get_destination_info: {destination}, cat={category}, gen={generation_id}")
 
         try:
-            delay = settings.TOOL_ARTIFICIAL_DELAY_SECONDS
+            delay = delay_seconds if delay_seconds is not None else settings.TOOL_ARTIFICIAL_DELAY_SECONDS
             if delay > 0:
                 await asyncio.sleep(delay)
 
