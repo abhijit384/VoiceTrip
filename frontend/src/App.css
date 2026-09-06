@@ -1,4 +1,8 @@
-/* VoiceTrip Design System & Micro-Animations */
+/* VoiceTrip Premium Design System & Micro-Animations */
+
+/* =====================================================
+   Core Keyframe Animations
+   ===================================================== */
 
 @keyframes pulseGlow {
   0%, 100% {
@@ -51,6 +55,137 @@
   }
 }
 
+/* =====================================================
+   Ambient Background Drift Animations
+   ===================================================== */
+
+@keyframes ambientDrift {
+  0% {
+    transform: translate(0, 0) scale(1);
+    opacity: 0.6;
+  }
+  33% {
+    transform: translate(30px, -20px) scale(1.1);
+    opacity: 0.8;
+  }
+  66% {
+    transform: translate(-20px, 15px) scale(0.95);
+    opacity: 0.5;
+  }
+  100% {
+    transform: translate(0, 0) scale(1);
+    opacity: 0.6;
+  }
+}
+
+@keyframes ambientDriftReverse {
+  0% {
+    transform: translate(0, 0) scale(1);
+    opacity: 0.5;
+  }
+  33% {
+    transform: translate(-25px, 20px) scale(1.05);
+    opacity: 0.7;
+  }
+  66% {
+    transform: translate(20px, -15px) scale(0.9);
+    opacity: 0.4;
+  }
+  100% {
+    transform: translate(0, 0) scale(1);
+    opacity: 0.5;
+  }
+}
+
+.animate-ambient-drift {
+  animation: ambientDrift 20s ease-in-out infinite;
+}
+
+.animate-ambient-drift-reverse {
+  animation: ambientDriftReverse 25s ease-in-out infinite;
+}
+
+/* =====================================================
+   Orb Ring Animations (around Microphone Button)
+   ===================================================== */
+
+@keyframes orbPulseIdle {
+  0%, 100% {
+    box-shadow: 0 0 20px 2px rgba(6, 182, 212, 0.15), inset 0 0 20px 2px rgba(6, 182, 212, 0.05);
+    transform: scale(1);
+  }
+  50% {
+    box-shadow: 0 0 35px 5px rgba(6, 182, 212, 0.25), inset 0 0 30px 3px rgba(6, 182, 212, 0.1);
+    transform: scale(1.02);
+  }
+}
+
+@keyframes orbPulseRecording {
+  0%, 100% {
+    box-shadow: 0 0 30px 4px rgba(239, 68, 68, 0.3), inset 0 0 20px 2px rgba(239, 68, 68, 0.1);
+    transform: scale(1);
+  }
+  50% {
+    box-shadow: 0 0 50px 8px rgba(239, 68, 68, 0.5), inset 0 0 30px 4px rgba(239, 68, 68, 0.15);
+    transform: scale(1.04);
+  }
+}
+
+@keyframes orbPulseSpeaking {
+  0%, 100% {
+    box-shadow: 0 0 25px 3px rgba(139, 92, 246, 0.2), inset 0 0 15px 2px rgba(139, 92, 246, 0.08);
+    transform: scale(1);
+  }
+  50% {
+    box-shadow: 0 0 45px 6px rgba(139, 92, 246, 0.35), inset 0 0 25px 3px rgba(139, 92, 246, 0.12);
+    transform: scale(1.03);
+  }
+}
+
+@keyframes orbPulseBusy {
+  0%, 100% {
+    box-shadow: 0 0 20px 2px rgba(245, 158, 11, 0.2), inset 0 0 15px 2px rgba(245, 158, 11, 0.06);
+    transform: scale(1);
+  }
+  50% {
+    box-shadow: 0 0 35px 4px rgba(245, 158, 11, 0.3), inset 0 0 20px 3px rgba(245, 158, 11, 0.1);
+    transform: scale(1.02);
+  }
+}
+
+@keyframes orbRotate {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.orb-ring-idle {
+  border: 2px solid rgba(6, 182, 212, 0.15);
+  animation: orbPulseIdle 3s ease-in-out infinite;
+  background: radial-gradient(circle, transparent 60%, rgba(6, 182, 212, 0.03) 100%);
+}
+
+.orb-ring-recording {
+  border: 2px solid rgba(239, 68, 68, 0.3);
+  animation: orbPulseRecording 1.5s ease-in-out infinite;
+  background: radial-gradient(circle, transparent 60%, rgba(239, 68, 68, 0.05) 100%);
+}
+
+.orb-ring-speaking {
+  border: 2px solid rgba(139, 92, 246, 0.2);
+  animation: orbPulseSpeaking 2s ease-in-out infinite;
+  background: radial-gradient(circle, transparent 60%, rgba(139, 92, 246, 0.04) 100%);
+}
+
+.orb-ring-busy {
+  border: 2px solid rgba(245, 158, 11, 0.2);
+  animation: orbPulseBusy 2.5s ease-in-out infinite;
+  background: radial-gradient(circle, transparent 60%, rgba(245, 158, 11, 0.03) 100%);
+}
+
+/* =====================================================
+   Recording Pulse & Voice Bars
+   ===================================================== */
+
 .animate-recording-pulse {
   animation: pulseGlow 1.8s infinite ease-in-out;
 }
@@ -77,26 +212,37 @@
 .voice-bar:nth-child(4) { animation-delay: 0.4s; }
 .voice-bar:nth-child(5) { animation-delay: 0.15s; }
 
+/* =====================================================
+   Glassmorphism Cards
+   ===================================================== */
+
 .glass-card {
-  background: rgba(15, 23, 42, 0.75);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(15, 23, 42, 0.7);
+  backdrop-filter: blur(20px) saturate(1.2);
+  -webkit-backdrop-filter: blur(20px) saturate(1.2);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  box-shadow: 0 4px 30px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.04);
 }
 
 .glass-card-interactive {
-  background: rgba(15, 23, 42, 0.75);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  background: rgba(15, 23, 42, 0.7);
+  backdrop-filter: blur(20px) saturate(1.2);
+  -webkit-backdrop-filter: blur(20px) saturate(1.2);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  box-shadow: 0 4px 30px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .glass-card-interactive:hover {
-  background: rgba(30, 41, 59, 0.85);
-  border-color: rgba(56, 189, 248, 0.25);
-  transform: translateY(-1px);
+  background: rgba(30, 41, 59, 0.8);
+  border-color: rgba(56, 189, 248, 0.2);
+  transform: translateY(-2px);
+  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 0 20px -5px rgba(6, 182, 212, 0.1);
 }
+
+/* =====================================================
+   Shimmer & Cursor Animations
+   ===================================================== */
 
 .shimmer-text {
   background: linear-gradient(90deg, #94a3b8 0%, #ffffff 50%, #94a3b8 100%);

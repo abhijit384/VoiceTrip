@@ -13,6 +13,11 @@ from app.services.railway_normalizer import railway_normalizer
 
 logger = logging.getLogger("gemini-service")
 
+ALLOWED_TOOL_INTENTS = {
+    "hotel_search", "flight_search", "train_search", "route_search",
+    "bus_search", "destination_info",
+}
+
 SYSTEM_VOICE_PROMPT = """You are VoiceTrip, a friendly, intelligent, and natural voice assistant with specialized expertise in travel planning.
 You are speaking directly to the user over a live voice call.
 
@@ -227,9 +232,20 @@ class GeminiService:
             "bye", "goodbye", "see you", "see ya", "talk to you later", "good night",
             "tell me a joke", "joke", "make me laugh", "tell me something funny",
             "what is python", "python", "what is machine learning", "explain machine learning", "machine learning",
-            "what is ai", "what is an llm", "tell me about coding",
+            "what is ai", "what is an llm", "tell me about coding", "what is programming",
             "what is the capital of france", "capital of france", "what is the capital of",
             "what is the weather like", "whats the weather like", "whats the weather", "what is the weather",
+            "what time is it", "whats the time", "what day is it",
+            "help", "help me", "i need help", "can you help me",
+            "yes", "no", "maybe", "sure", "of course", "not really", "nope",
+            "what is javascript", "what is java", "what is html", "what is css",
+            "what is react", "what is nodejs", "what is sql", "what is a database",
+            "tell me something", "tell me something interesting", "fun fact",
+            "how does ai work", "how does machine learning work", "explain ai",
+            "what are you", "are you a robot", "are you human", "are you real",
+            "sing a song", "tell me a story", "recite a poem",
+            "good job", "well done", "that was helpful", "you are great", "youre great",
+            "never mind", "forget it", "cancel", "stop", "nothing",
         ]
         is_exact_general = any(clean_text == p or clean_text.startswith(f"{p} ") or clean_text.endswith(f" {p}") for p in general_conversational_phrases)
         if is_exact_general:
@@ -758,6 +774,20 @@ class GeminiService:
                         extracted_ctx.intent = "hotel_search"
 
                 extracted_ctx.updated_summary = extracted_ctx.to_readable_summary()
+
+                # Safety override: if deterministic says conversational but Gemini says travel,
+                # prefer conversational for short utterances to prevent false travel routing
+                if (
+                    fallback_ctx.intent in ["conversational", "greeting"]
+                    and extracted_ctx.intent in ALLOWED_TOOL_INTENTS
+                    and len(user_message.split()) <= 6
+                ):
+                    logger.info(
+                        f"[SAFETY] Gemini classified '{user_message}' as '{extracted_ctx.intent}' "
+                        f"but deterministic says '{fallback_ctx.intent}'. Preferring deterministic for short utterance."
+                    )
+                    return fallback_ctx
+
                 return extracted_ctx
 
         except Exception as e:

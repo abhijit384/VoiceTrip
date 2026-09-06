@@ -15,6 +15,7 @@ import {
   Radio,
   Lightbulb,
   AlertCircle,
+  MessageSquarePlus,
 } from 'lucide-react';
 import { useAuthoritativeRecorder } from './hooks/useAuthoritativeRecorder';
 import { useRimeAudioPlayer } from './hooks/useRimeAudioPlayer';
@@ -109,7 +110,7 @@ export default function App() {
     }
   });
 
-  // Barge-in Speech Interruption Handler: Triggered when genuine user speech (>400ms) occurs during AI speech
+  // Barge-in Speech Interruption Handler: Triggered when genuine user speech (>600ms) occurs during AI speech
   const handleBargeInInterruption = useCallback(() => {
     if (rimePlayer.isPlaying || pipelineState === 'speaking') {
       console.log('[BARGE_IN] USER_SPEECH_DETECTED during AI speech. Halting Rime playback immediately...');
@@ -120,8 +121,9 @@ export default function App() {
       setGenerationCount(nextCount);
       activeGenerationRef.current = nextGen;
 
-      setPipelineState('recording');
-      setStatusMessage('Interrupted • Recording your new request...');
+      // CRITICAL: Set to 'idle', NOT 'recording' — mic activation must be fully manual
+      setPipelineState('idle');
+      setStatusMessage('AI interrupted — tap Start Mic to speak');
     }
   }, [rimePlayer, pipelineState, generationCount]);
 
@@ -132,6 +134,13 @@ export default function App() {
   useEffect(() => {
     document.title = 'VoiceTrip | Your AI Voice Travel Assistant';
   }, []);
+
+  // Auto-scroll chat history when new messages arrive
+  useEffect(() => {
+    if (chatScrollRef.current) {
+      chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
+    }
+  }, [turns]);
 
   const handleDemoSignup = (name: string, email: string) => {
     setUserName(name);
@@ -240,10 +249,11 @@ export default function App() {
           setPipelineState('speaking');
           setStatusMessage('AI Speaking...');
 
-          // Engage background microphone monitoring for genuine speech barge-in
-          recorder.startInterruptionMonitoring();
-
           await rimePlayer.playRimeSpeech(spoken, targetGen);
+
+          // Engage background audio monitoring for genuine speech barge-in
+          // (starts AFTER playback begins, with internal 800ms delay to prevent echo)
+          recorder.startInterruptionMonitoring();
           return;
         }
 
@@ -349,10 +359,11 @@ export default function App() {
           setPipelineState('speaking');
           setStatusMessage('AI Speaking...');
 
-          // Engage background microphone monitoring for genuine speech barge-in
-          recorder.startInterruptionMonitoring();
-
           await rimePlayer.playRimeSpeech(spokenText, targetGen);
+
+          // Engage background audio monitoring for genuine speech barge-in
+          // (starts AFTER playback begins, with internal 800ms delay to prevent echo)
+          recorder.startInterruptionMonitoring();
           return;
         }
 
@@ -516,7 +527,13 @@ export default function App() {
     : userTranscript;
 
   return (
-    <div className="min-h-screen bg-[#080c14] text-slate-100 flex flex-col items-center justify-between p-4 md:p-8 font-sans selection:bg-cyan-500/30">
+    <div className="min-h-screen bg-[#060a12] text-slate-100 flex flex-col items-center justify-between p-4 md:p-8 font-sans selection:bg-cyan-500/30 relative overflow-hidden">
+      {/* Ambient Background Effects */}
+      <div className="fixed inset-0 pointer-events-none z-0">
+        <div className="absolute top-[-20%] left-[-10%] w-[600px] h-[600px] rounded-full bg-cyan-500/[0.04] blur-[120px] animate-ambient-drift" />
+        <div className="absolute bottom-[-15%] right-[-10%] w-[500px] h-[500px] rounded-full bg-purple-500/[0.04] blur-[120px] animate-ambient-drift-reverse" />
+        <div className="absolute top-[40%] left-[50%] -translate-x-1/2 w-[300px] h-[300px] rounded-full bg-teal-500/[0.03] blur-[100px]" />
+      </div>
       {/* DEMO WELCOME / SIGNUP MODAL */}
       {showWelcomeModal && (
         <DemoWelcomeModal
@@ -526,7 +543,7 @@ export default function App() {
       )}
 
       {/* Top Header */}
-      <header className="w-full max-w-4xl flex items-center justify-between border-b border-slate-800/80 pb-4 mb-6">
+      <header className="relative z-10 w-full max-w-4xl flex items-center justify-between border-b border-slate-800/60 pb-4 mb-6">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-cyan-500 to-teal-400 p-0.5 shadow-md shadow-cyan-500/20">
             <div className="w-full h-full rounded-[14px] bg-slate-950 flex items-center justify-center text-cyan-400">
@@ -572,16 +589,17 @@ export default function App() {
           <button
             onClick={handleReset}
             id="reset-btn"
-            className="p-2 rounded-xl bg-slate-900/90 hover:bg-slate-800 text-slate-400 hover:text-white border border-slate-800 transition"
-            title="Reset Conversation"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-900/90 hover:bg-slate-800 text-slate-400 hover:text-white border border-slate-800 transition"
+            title="Start a new conversation"
           >
-            <RotateCcw className="w-4 h-4" />
+            <MessageSquarePlus className="w-4 h-4" />
+            <span className="hidden sm:inline text-xs font-medium">New Chat</span>
           </button>
         </div>
       </header>
 
       {/* Main Container */}
-      <main className="w-full max-w-4xl flex-1 flex flex-col gap-6">
+      <main className="relative z-10 w-full max-w-4xl flex-1 flex flex-col gap-6">
         {/* Welcome Greeting Banner (Requirement 2) */}
         <div className="p-5 rounded-2xl bg-gradient-to-r from-slate-900/90 via-slate-900/60 to-slate-950/90 border border-slate-800 shadow-lg flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div>
@@ -620,16 +638,16 @@ export default function App() {
         </div>
 
         {/* SECTION 1: CENTRAL MICROPHONE EXPERIENCE (Requirements 4, 5, 6, 10) */}
-        <div className="relative p-6 sm:p-8 rounded-3xl bg-gradient-to-b from-slate-900/95 to-slate-950/90 border border-slate-800 shadow-2xl backdrop-blur-xl flex flex-col items-center justify-center gap-6 overflow-hidden">
+        <div className="relative p-6 sm:p-8 rounded-3xl bg-gradient-to-b from-slate-900/80 to-slate-950/95 border border-slate-700/40 shadow-[0_8px_40px_-12px_rgba(0,0,0,0.8),0_0_80px_-30px_rgba(6,182,212,0.15)] backdrop-blur-2xl flex flex-col items-center justify-center gap-6 overflow-hidden">
           {/* Subtle Ambient Glow */}
           <div
-            className={`absolute w-72 h-72 rounded-full blur-3xl pointer-events-none transition-all duration-500 ${
+            className={`absolute w-80 h-80 rounded-full blur-[100px] pointer-events-none transition-all duration-700 ${
               recorder.isRecording
                 ? 'bg-red-500/20 scale-125'
                 : pipelineState === 'speaking'
-                ? 'bg-purple-500/15'
+                ? 'bg-purple-500/20 scale-110'
                 : isBusy
-                ? 'bg-amber-500/15'
+                ? 'bg-amber-500/15 scale-105'
                 : 'bg-cyan-500/10'
             }`}
           />
@@ -647,17 +665,27 @@ export default function App() {
           </div>
 
           {/* Central Microphone Button & Controls Row */}
-          <div className="relative flex flex-col items-center gap-4">
+          <div className="relative flex flex-col items-center gap-5">
+            {/* Animated Orb Ring around Mic Button */}
+            <div className={`absolute w-52 h-52 sm:w-56 sm:h-56 rounded-full transition-all duration-500 ${
+              recorder.isRecording
+                ? 'orb-ring-recording'
+                : pipelineState === 'speaking'
+                ? 'orb-ring-speaking'
+                : isBusy
+                ? 'orb-ring-busy'
+                : 'orb-ring-idle'
+            }`} />
             <button
               onClick={handleToggleMic}
               disabled={isBusy}
               id="mic-main-btn"
               className={`relative z-10 w-44 h-44 sm:w-48 sm:h-48 rounded-full font-bold text-base flex flex-col items-center justify-center gap-2 shadow-2xl transition-all duration-300 transform active:scale-95 group ${
                 recorder.isRecording
-                  ? 'bg-gradient-to-b from-red-500 to-rose-600 text-white animate-recording-pulse border-4 border-red-300/40 shadow-red-950/80'
+                  ? 'bg-gradient-to-b from-red-500 to-rose-600 text-white animate-recording-pulse border-4 border-red-300/40 shadow-[0_0_50px_-5px_rgba(239,68,68,0.5)]'
                   : isBusy
                   ? 'bg-slate-800/90 text-slate-400 cursor-not-allowed border-2 border-slate-700'
-                  : 'bg-gradient-to-tr from-cyan-500 via-teal-500 to-emerald-500 hover:from-cyan-400 hover:to-emerald-400 text-slate-950 shadow-cyan-950/60 hover:shadow-cyan-500/30 border-4 border-cyan-400/20'
+                  : 'bg-gradient-to-tr from-cyan-500 via-teal-500 to-emerald-500 hover:from-cyan-400 hover:to-emerald-400 text-slate-950 shadow-[0_0_60px_-10px_rgba(6,182,212,0.4)] hover:shadow-[0_0_80px_-10px_rgba(6,182,212,0.6)] border-4 border-cyan-400/30'
               }`}
             >
               {recorder.isRecording ? (
@@ -807,7 +835,7 @@ export default function App() {
         {/* SECTION 2: LIVE TRANSCRIPTION & AI RESPONSE CARDS (Requirements 7, 8, 12, 13) */}
         <div className="grid grid-cols-1 gap-5">
           {/* User Speech & Live Transcription Card */}
-          <div className="p-5 rounded-2xl bg-slate-900/90 border border-slate-800 shadow-xl flex flex-col gap-2.5">
+          <div className="p-5 rounded-2xl glass-card shadow-xl flex flex-col gap-2.5">
             <div className="flex items-center justify-between">
               <span className="text-xs font-semibold uppercase tracking-wider text-cyan-400 flex items-center gap-2">
                 <User className="w-3.5 h-3.5 text-cyan-400" />
@@ -874,7 +902,7 @@ export default function App() {
           </div>
 
           {/* AI Response Card & Rime Voice Controls (Requirements 12 & 13) */}
-          <div className="p-5 sm:p-6 rounded-2xl bg-slate-900/90 border border-purple-900/30 shadow-xl flex flex-col gap-4">
+          <div className="p-5 sm:p-6 rounded-2xl glass-card border-purple-900/30 shadow-xl flex flex-col gap-4">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-800/80">
               <span className="text-xs font-semibold uppercase tracking-wider text-purple-400 flex items-center gap-2">
                 <Bot className="w-4 h-4 text-purple-400" />
@@ -1151,7 +1179,7 @@ export default function App() {
       </main>
 
       {/* Footer */}
-      <footer className="w-full max-w-4xl pt-6 mt-6 border-t border-slate-800/80 flex flex-col sm:flex-row items-center justify-between text-[11px] text-slate-500 gap-2">
+      <footer className="relative z-10 w-full max-w-4xl pt-6 mt-6 border-t border-slate-800/60 flex flex-col sm:flex-row items-center justify-between text-[11px] text-slate-500 gap-2">
         <div className="flex items-center gap-2">
           <span>VoiceTrip • Powered by Deepgram Nova-2 + Gemini + Rime Mist</span>
         </div>

@@ -108,12 +108,13 @@ export function useAuthoritativeRecorder(onBargeInSpeechDetected?: () => void) {
   const stopPromiseResolverRef = useRef<((blob: Blob) => void) | null>(null);
   const webSpeechRecRef = useRef<any>(null);
 
-  // Interruption / Barge-in detection refs (~500ms sustained speech threshold)
+  // Interruption / Barge-in detection refs (~800ms sustained speech threshold)
   const onBargeInRef = useRef(onBargeInSpeechDetected);
   onBargeInRef.current = onBargeInSpeechDetected;
   const isMonitoringRef = useRef<boolean>(false);
   const consecutiveSpeechFramesRef = useRef<number>(0);
   const hasTriggeredInterruptionRef = useRef<boolean>(false);
+  const monitoringStartTimeRef = useRef<number>(0);
 
   // Enumerate microphones
   const refreshDevices = useCallback(async () => {
@@ -292,21 +293,24 @@ export function useAuthoritativeRecorder(onBargeInSpeechDetected?: () => void) {
 
           setMicVolume(level);
 
-          // Interruption / Barge-in Detection (requires sustained speech ~400-500ms, ignores clicks < 300ms)
-          if (isMonitoringRef.current && level >= 16) {
+          // Interruption / Barge-in Detection
+          // Requires sustained speech >800ms AND monitoring must have been active for >1000ms
+          // (to prevent echo detection from the AI's own audio)
+          const monitoringAge = Date.now() - monitoringStartTimeRef.current;
+          if (isMonitoringRef.current && level >= 20 && monitoringAge > 1000) {
             consecutiveSpeechFramesRef.current += 1;
-            // 24 frames @ 60fps ~= 400ms sustained speech
-            if (consecutiveSpeechFramesRef.current >= 24 && !hasTriggeredInterruptionRef.current) {
+            // 36 frames @ 60fps ~= 600ms sustained speech (above echo threshold)
+            if (consecutiveSpeechFramesRef.current >= 36 && !hasTriggeredInterruptionRef.current) {
               hasTriggeredInterruptionRef.current = true;
-              console.log('[RECORDER] USER_SPEECH_DETECTED during AI speech (>400ms sustained). Triggering barge-in interruption...');
+              console.log('[RECORDER] USER_SPEECH_DETECTED during AI speech (>600ms sustained, >1s after monitoring start). Triggering barge-in interruption...');
               if (onBargeInRef.current) {
                 onBargeInRef.current();
               }
             }
           } else {
             // Decay frame counter so single clicks or taps don't accumulate
-            if (consecutiveSpeechFramesRef.current < 24) {
-              consecutiveSpeechFramesRef.current = Math.max(0, consecutiveSpeechFramesRef.current - 2);
+            if (consecutiveSpeechFramesRef.current < 36) {
+              consecutiveSpeechFramesRef.current = Math.max(0, consecutiveSpeechFramesRef.current - 3);
             }
           }
 
@@ -479,70 +483,31 @@ export function useAuthoritativeRecorder(onBargeInSpeechDetected?: () => void) {
   }, [acquireStream, setupAudioMeterAndVAD, stopStreamAndMeter, selectedDeviceId, refreshDevices]);
 
   // ENABLE INTERRUPTION MONITORING (Active during AI Speech)
+  // CRITICAL: This must NOT start MediaRecorder or set isRecording=true.
+  // It only sets up the audio analyser for barge-in level detection.
   const startInterruptionMonitoring = useCallback(async () => {
-    console.log('[RECORDER] Engaging background microphone monitoring for barge-in during AI speech...');
-    isMonitoringRef.current = true;
+    console.log('[RECORDER] Engaging background audio monitoring for barge-in during AI speech (NO recording)...');
     hasTriggeredInterruptionRef.current = false;
     consecutiveSpeechFramesRef.current = 0;
+    monitoringStartTimeRef.current = Date.now();
+
+    // Small delay before enabling monitoring to let AI audio settle
+    await new Promise(resolve => setTimeout(resolve, 800));
+
+    isMonitoringRef.current = true;
     setIsMonitoringForInterruption(true);
 
-    // If stream already exists and is active, start recording chunks seamlessly
+    // If stream already exists and is active, just enable monitoring flag — don't start recording
     if (streamRef.current && streamRef.current.active) {
-      if (!mediaRecorderRef.current || mediaRecorderRef.current.state === 'inactive') {
-        const mime = getSupportedAudioMimeType();
-        audioChunksRef.current = [];
-        try {
-          const rec = mime ? new MediaRecorder(streamRef.current, { mimeType: mime }) : new MediaRecorder(streamRef.current);
-          mediaRecorderRef.current = rec;
-          rec.ondataavailable = (e: BlobEvent) => {
-            if (e.data && e.data.size > 0) {
-              audioChunksRef.current.push(e.data);
-              setRecordedBytes(audioChunksRef.current.reduce((a, b) => a + b.size, 0));
-            }
-          };
-          rec.onstop = () => {
-            const finalMime = rec.mimeType || mime || 'audio/webm';
-            const finalBlob = new Blob(audioChunksRef.current, { type: finalMime });
-            if (stopPromiseResolverRef.current) {
-              stopPromiseResolverRef.current(finalBlob);
-              stopPromiseResolverRef.current = null;
-            }
-          };
-          rec.start(250);
-          setIsRecording(true);
-        } catch (err) {
-          console.warn('[RECORDER] MediaRecorder monitoring start notice:', err);
-        }
-      }
       return;
     }
 
-    // Otherwise acquire listening stream
+    // Otherwise acquire a monitoring-only stream (just analyser, no MediaRecorder)
     try {
       const stream = await acquireStream();
       streamRef.current = stream;
       setupAudioMeterAndVAD(stream);
-
-      const mime = getSupportedAudioMimeType();
-      audioChunksRef.current = [];
-      const rec = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
-      mediaRecorderRef.current = rec;
-      rec.ondataavailable = (e: BlobEvent) => {
-        if (e.data && e.data.size > 0) {
-          audioChunksRef.current.push(e.data);
-          setRecordedBytes(audioChunksRef.current.reduce((a, b) => a + b.size, 0));
-        }
-      };
-      rec.onstop = () => {
-        const finalMime = rec.mimeType || mime || 'audio/webm';
-        const finalBlob = new Blob(audioChunksRef.current, { type: finalMime });
-        if (stopPromiseResolverRef.current) {
-          stopPromiseResolverRef.current(finalBlob);
-          stopPromiseResolverRef.current = null;
-        }
-      };
-      rec.start(250);
-      setIsRecording(true);
+      // NOTE: No MediaRecorder started, no isRecording set to true
     } catch (err) {
       console.warn('[RECORDER] Could not start interruption monitoring stream:', err);
     }
@@ -560,6 +525,7 @@ export function useAuthoritativeRecorder(onBargeInSpeechDetected?: () => void) {
     setIsRecording(false);
     isMonitoringRef.current = false;
     setIsMonitoringForInterruption(false);
+    setInterimTranscript(''); // Clear interim transcript to prevent stale display
 
     if (webSpeechRecRef.current) {
       try { webSpeechRecRef.current.stop(); } catch {}

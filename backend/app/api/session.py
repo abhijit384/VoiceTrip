@@ -93,9 +93,24 @@ async def process_user_transcript(payload: ChatRequest):
     # Append user message to conversation history
     sessions[session_id].append({"role": "user", "content": normalized_msg})
 
+    # Limit conversation history to prevent prompt bloat (last 8 messages = ~4 turns)
+    recent_history = sessions[session_id][-8:] if len(sessions[session_id]) > 8 else sessions[session_id]
+
+    # Truncate large tool result messages in history to prevent huge prompts
+    trimmed_history = []
+    for msg in recent_history:
+        if msg.get("role") == "tool" and msg.get("content"):
+            content_str = str(msg["content"])
+            if len(content_str) > 600:
+                trimmed_history.append({**msg, "content": content_str[:600] + "... (truncated)"})
+            else:
+                trimmed_history.append(msg)
+        else:
+            trimmed_history.append(msg)
+
     # Call LLM service with canonical multi-turn memory
     llm_res = await llm_service.chat_completion(
-        messages=sessions[session_id],
+        messages=trimmed_history,
         prior_context=prior_context,
     )
 
@@ -115,9 +130,18 @@ async def process_user_transcript(payload: ChatRequest):
 
     # Context Lifecycle Management:
     # If the intent is greeting or conversational (non-travel), clear travel context so stale state doesn't persist
+    # If the intent is a NEW travel request of a different domain, clear old context to prevent cross-domain leakage
     if updated_context:
-        if updated_context.intent in ["greeting", "conversational"]:
+        if updated_context.intent in ["greeting", "conversational", "unclear"]:
             session_contexts[session_id] = None
+        elif updated_context.request_type == "NEW" and prior_context:
+            # Clear old context fields if switching travel domain (e.g. hotel_search -> train_search)
+            if updated_context.intent != prior_context.intent:
+                logger.info(
+                    f"[CONTEXT] Domain switch: {prior_context.intent} -> {updated_context.intent}. "
+                    f"Prior context cleared to prevent cross-domain leakage."
+                )
+            session_contexts[session_id] = updated_context
         else:
             session_contexts[session_id] = updated_context
 
@@ -244,11 +268,17 @@ async def process_tool_result(payload: ToolResultRequest):
     )
 
 
+class ResetRequest(BaseModel):
+    session_id: Optional[str] = "default"
+
+
 @router.post("/reset")
-async def reset_session(session_id: str = "default"):
+async def reset_session(payload: Optional[ResetRequest] = None, session_id: str = "default"):
     """Resets conversation history and canonical context for a session."""
-    if session_id in sessions:
-        sessions[session_id] = []
-    if session_id in session_contexts:
-        del session_contexts[session_id]
-    return {"status": "reset", "session_id": session_id}
+    sid = (payload.session_id if payload and payload.session_id else session_id) or "default"
+    if sid in sessions:
+        sessions[sid] = []
+    if sid in session_contexts:
+        del session_contexts[sid]
+    logger.info(f"[RESET] Session '{sid}' conversation and context cleared.")
+    return {"status": "reset", "session_id": sid}
