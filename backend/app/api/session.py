@@ -242,9 +242,10 @@ def _compact_tool_results_for_voice(tool_name: str, results: Any) -> Any:
         return results
 
     if tool_name == "search_trains" and "trains" in results:
-        trains = results.get("trains", [])[:4]
+        trains = results.get("trains", [])
         return {
-            "total_found": len(results.get("trains", [])),
+            "type": "train_search",
+            "total_found": len(trains),
             "origin": results.get("origin"),
             "destination": results.get("destination"),
             "trains": [
@@ -252,16 +253,17 @@ def _compact_tool_results_for_voice(tool_name: str, results: Any) -> Any:
                     "name": t.get("name"),
                     "departure": t.get("departure"),
                     "arrival": t.get("arrival"),
-                    "price": t.get("price"),
+                    "price": t.get("price") or t.get("fare"),
                 }
                 for t in trains if isinstance(t, dict)
             ],
         }
 
     if tool_name == "search_flights" and "flights" in results:
-        flights = results.get("flights", [])[:4]
+        flights = results.get("flights", [])
         return {
-            "total_found": len(results.get("flights", [])),
+            "type": "flight_search",
+            "total_found": len(flights),
             "origin": results.get("origin"),
             "destination": results.get("destination"),
             "flights": [
@@ -277,18 +279,37 @@ def _compact_tool_results_for_voice(tool_name: str, results: Any) -> Any:
         }
 
     if tool_name == "search_hotels" and "hotels" in results:
-        hotels = results.get("hotels", [])[:4]
+        hotels = results.get("hotels", [])
         return {
-            "total_found": len(results.get("hotels", [])),
+            "type": "hotel_search",
+            "total_found": len(hotels),
             "destination": results.get("destination"),
             "hotels": [
                 {
                     "name": h.get("name"),
-                    "price_formatted": h.get("price_formatted"),
+                    "price_formatted": h.get("price_formatted") or (f"₹{h.get('price')}" if h.get("price") else None),
                     "rating": h.get("rating"),
                     "location": h.get("location"),
                 }
                 for h in hotels if isinstance(h, dict)
+            ],
+        }
+
+    if tool_name in ["get_route_options", "search_buses"] and ("routes" in results or "buses" in results):
+        routes = results.get("routes", []) or results.get("buses", [])
+        return {
+            "type": "route_search",
+            "total_found": len(routes),
+            "origin": results.get("origin"),
+            "destination": results.get("destination"),
+            "routes": [
+                {
+                    "mode": r.get("mode") or r.get("operator") or "transit",
+                    "departure": r.get("departure"),
+                    "duration": r.get("duration"),
+                    "price": r.get("price"),
+                }
+                for r in routes if isinstance(r, dict)
             ],
         }
 

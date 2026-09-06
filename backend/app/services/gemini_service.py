@@ -948,18 +948,28 @@ class GeminiService:
             count = len(flights)
             if count == 1:
                 f0 = flights[0]
-                return f"I found 1 flight option from {orig} to {dest} for {date_str}{time_str}: {f0.get('airline')} {f0.get('flight_number')} departs at {f0.get('departure')} and arrives at {f0.get('arrival')} for {f0.get('price')}."
+                airline = f0.get('airline', 'Flight')
+                f_num = f0.get('flight_number', '')
+                dep = f0.get('departure', '')
+                price = f0.get('price', '')
+                return f"I found 1 flight from {orig} to {dest} for {date_str}{time_str}: {airline} {f_num} departing at {dep} for {price}."
 
+            ordinals = ["first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth"]
             flight_descs = []
-            for f in flights:
-                flight_descs.append(
-                    f"{f.get('airline')} {f.get('flight_number')} departing at {f.get('departure')} for {f.get('price')}"
-                )
+            for idx, f in enumerate(flights):
+                ord_word = ordinals[idx] if idx < len(ordinals) else f"option {idx+1}"
+                airline = f.get('airline', 'Flight')
+                f_num = f.get('flight_number', '')
+                dep = f.get('departure', '')
+                price = f.get('price', '')
+                flight_descs.append(f"the {ord_word} is {airline} {f_num} departing at {dep} for {price}")
+
             if len(flight_descs) == 2:
                 joined = f"{flight_descs[0]}, and {flight_descs[1]}"
             else:
                 joined = f"{', '.join(flight_descs[:-1])}, and {flight_descs[-1]}"
-            return f"I found {count} flight options from {orig} to {dest} for {date_str}{time_str}: {joined}."
+            cap_joined = joined[0].upper() + joined[1:] if joined else ""
+            return f"I found {count} flight options from {orig} to {dest} for {date_str}{time_str}. {cap_joined}."
 
         # 2. HOTEL RESULTS
         if res_type == "hotel_search":
@@ -978,17 +988,25 @@ class GeminiService:
             count = len(hotels)
             if count == 1:
                 h0 = hotels[0]
-                return f"I found 1 hotel option in {dest}{budget_str}: {h0.get('name')} at {h0.get('price_formatted') or ('₹' + str(h0.get('price', '')))} per night with a {h0.get('rating')} star rating."
+                name = h0.get('name', 'Hotel')
+                rate = h0.get('price_formatted') or (f"₹{h0.get('price')}" if h0.get('price') else "standard rate")
+                rating = f" with a {h0.get('rating')} star rating" if h0.get('rating') else ""
+                return f"I found 1 hotel option in {dest}{budget_str}: {name} at {rate} per night{rating}."
 
+            ordinals = ["first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth"]
             hotel_descs = []
-            for h in hotels:
+            for idx, h in enumerate(hotels):
+                ord_word = ordinals[idx] if idx < len(ordinals) else f"option {idx+1}"
+                name = h.get('name', 'Hotel')
                 rate = h.get('price_formatted') or (f"₹{h.get('price')}" if h.get('price') else "standard rate")
-                hotel_descs.append(f"{h.get('name')} at {rate} per night")
+                hotel_descs.append(f"the {ord_word} is {name} at {rate} per night")
+
             if len(hotel_descs) == 2:
                 joined = f"{hotel_descs[0]}, and {hotel_descs[1]}"
             else:
                 joined = f"{', '.join(hotel_descs[:-1])}, and {hotel_descs[-1]}"
-            return f"I found {count} hotel options near {dest}{budget_str}: {joined}."
+            cap_joined = joined[0].upper() + joined[1:] if joined else ""
+            return f"I found {count} hotel options in {dest}{budget_str}. {cap_joined}."
 
         # 3. TRAIN RESULTS
         if res_type == "train_search":
@@ -1005,23 +1023,30 @@ class GeminiService:
             count = len(trains)
             if count == 1:
                 t0 = trains[0]
+                name = t0.get('name', 'Train')
                 fare = t0.get('price') or t0.get('fare') or "standard fare"
-                return f"I found 1 {time_qualifier}train option from {orig} to {dest} for {date_str}: {t0.get('name')} at {fare}, departing at {t0.get('departure')}."
+                dep = f" departing at {t0.get('departure')}" if t0.get('departure') else ""
+                return f"I found 1 {time_qualifier}train option from {orig} to {dest} for {date_str}: {name} at {fare}{dep}."
 
+            ordinals = ["first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth"]
             train_descs = []
-            for t in trains:
+            for idx, t in enumerate(trains):
+                ord_word = ordinals[idx] if idx < len(ordinals) else f"option {idx+1}"
+                name = t.get('name', 'Train')
                 fare = t.get('price') or t.get('fare') or "standard fare"
                 dep = f" departing at {t.get('departure')}" if t.get('departure') else ""
-                train_descs.append(f"{t.get('name')} at {fare}{dep}")
+                train_descs.append(f"the {ord_word} is {name}{dep} for {fare}")
+
             if len(train_descs) == 2:
                 joined = f"{train_descs[0]}, and {train_descs[1]}"
             else:
                 joined = f"{', '.join(train_descs[:-1])}, and {train_descs[-1]}"
-            return f"I found {count} {time_qualifier}train options from {orig} to {dest} for {date_str}: {joined}."
+            cap_joined = joined[0].upper() + joined[1:] if joined else ""
+            return f"I found {count} {time_qualifier}train options from {orig} to {dest} for {date_str}. {cap_joined}."
 
         # 4. ROUTE / BUS RESULTS
-        if res_type == "route_search":
-            routes = tool_results.get("routes", [])
+        if res_type in ["route_search", "bus_search"]:
+            routes = tool_results.get("routes", []) or tool_results.get("buses", [])
             orig = tool_results.get("origin", "origin")
             dest = tool_results.get("destination", "destination")
             if not routes:
@@ -1030,19 +1055,27 @@ class GeminiService:
             count = len(routes)
             if count == 1:
                 r0 = routes[0]
-                return f"To travel from {orig} to {dest}, you can take {r0.get('mode', 'transit')} taking about {r0.get('duration')} for {r0.get('price')}."
+                mode = r0.get('mode') or r0.get('operator') or 'transit'
+                dur = f" taking {r0.get('duration')}" if r0.get('duration') else ""
+                price = f" for {r0.get('price')}" if r0.get('price') else ""
+                return f"To travel from {orig} to {dest}, you can take {mode}{dur}{price}."
 
-            route_descs = [
-                f"{r.get('mode')} taking {r.get('duration')} for {r.get('price')}"
-                for r in routes
-            ]
+            ordinals = ["first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth"]
+            route_descs = []
+            for idx, r in enumerate(routes):
+                ord_word = ordinals[idx] if idx < len(ordinals) else f"option {idx+1}"
+                mode = r.get('mode') or r.get('operator') or 'bus'
+                dep = f" departing at {r.get('departure')}" if r.get('departure') else ""
+                dur = f" taking {r.get('duration')}" if r.get('duration') else ""
+                price = f" for {r.get('price')}" if r.get('price') else ""
+                route_descs.append(f"the {ord_word} is {mode}{dep}{dur}{price}")
+
             if len(route_descs) == 2:
                 joined = f"{route_descs[0]}, and {route_descs[1]}"
             else:
                 joined = f"{', '.join(route_descs[:-1])}, and {route_descs[-1]}"
-            return f"I found {count} travel options between {orig} and {dest}: {joined}."
-
-            return f"I found {count} travel options between {orig} and {dest}. The fastest option is {routes[0].get('mode')} taking {routes[0].get('duration')}."
+            cap_joined = joined[0].upper() + joined[1:] if joined else ""
+            return f"I found {count} travel options between {orig} and {dest}: {cap_joined}."
 
         # 5. DESTINATION INFO
         if res_type == "destination_info":
