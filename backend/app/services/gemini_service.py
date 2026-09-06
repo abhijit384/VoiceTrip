@@ -27,10 +27,14 @@ CRITICAL VOICE & CONVERSATIONAL GUIDELINES:
 3. For general conversation, greetings, humor, or general knowledge (e.g. Python, machine learning, science, geography, jokes, weather), answer naturally, accurately, and concisely.
 4. NEVER invent flight numbers, train numbers, hotel availability, prices, departure times, or booking status.
 5. SPOKEN RESULT RULES FOR SUMMARIZING SEARCH / TOOL RESULTS:
-   - For 1 to 3 results: Mention EVERY result briefly with key details (e.g. for trains: name and fare/departure; for hotels: name and price per night; for flights: airline/flight name, departure, arrival, and price; for buses/routes: operator/mode, departure, arrival, fare).
-   - For 4 to 5 results: State the total count and mention the 3 to 5 options with key details.
-   - For more than 5 results: State the total count found and summarize the top few options.
-   - Ground spoken answers ONLY in information contained in the actual tool results.
+   - When tool results are present, speak a complete, natural spoken summary of ALL relevant options returned and displayed in the UI (e.g. all 4 flights, all 4 trains, or all 4 hotels).
+   - For each option, include its key identifying details concisely:
+     * Flights: airline/flight name, departure time, and price.
+     * Trains: train name, departure time, and fare.
+     * Hotels: hotel name, price per night, and rating.
+     * Routes/Buses: mode/operator, departure time, duration, and fare.
+   - Do NOT drop options or speak only the first result. Summarize all displayed options compactly in natural conversational sentences.
+   - Ground spoken answers ONLY in information contained in the actual tool results. Never invent prices or details.
    - Do NOT read internal JSON, IDs, request IDs, generation IDs, or tool metadata.
    - Do NOT call results "demo" in spoken responses.
 6. If a question is general travel knowledge (e.g. trip advice, packing tips, best time to visit, weather), answer directly and conversationally without calling search tools.
@@ -989,10 +993,10 @@ class GeminiService:
                     f"TOOL RESULTS: {json.dumps(tool_results) if isinstance(tool_results, (dict, list)) else str(tool_results)}"
                 )
                 contents.append(
-                    "INSTRUCTION: Synthesize a spoken summary for Rime TTS following the SPOKEN RESULT RULES:\n"
-                    "- For 1 to 3 results: Mention EVERY result briefly with key details (e.g. for trains: name and fare/departure; for hotels: name and price per night; for flights: airline/flight name, departure, arrival, and price; for buses/routes: operator/mode, departure, arrival, fare).\n"
-                    "- For 4 to 5 results: State the total count and mention the 3 to 5 options with key details.\n"
-                    "- For >5 results: State the total count found and summarize the top few options.\n"
+                    "INSTRUCTION: Synthesize a complete, spoken summary for Rime TTS following the SPOKEN RESULT RULES:\n"
+                    "- Mention and summarize EVERY relevant option returned and displayed in the UI (e.g. all 4 flights, all 4 trains, or all 4 hotels).\n"
+                    "- For each option, include its key identifying details concisely (name, departure time, and price/fare).\n"
+                    "- Do NOT drop options or speak only the first result. Summarize all displayed options compactly in natural conversational speech.\n"
                     "- Ground spoken answers ONLY in information contained in the actual TOOL RESULTS. Never invent prices, times, or details.\n"
                     "- Do NOT say 'demo'. Do NOT read internal JSON, IDs, request IDs, or metadata."
                 )
@@ -1088,25 +1092,16 @@ class GeminiService:
                 f0 = flights[0]
                 return f"I found 1 flight option from {orig} to {dest} for {date_str}{time_str}: {f0.get('airline')} {f0.get('flight_number')} departs at {f0.get('departure')} and arrives at {f0.get('arrival')} for {f0.get('price')}."
 
-            if count <= 3:
-                flight_descs = []
-                for f in flights:
-                    flight_descs.append(
-                        f"{f.get('airline')} {f.get('flight_number')} departs at {f.get('departure')} arriving at {f.get('arrival')} for {f.get('price')}"
-                    )
-                if len(flight_descs) == 2:
-                    joined = f"{flight_descs[0]}, and {flight_descs[1]}"
-                else:
-                    joined = f"{flight_descs[0]}, {flight_descs[1]}, and {flight_descs[2]}"
-                return f"I found {count} flight options from {orig} to {dest} for {date_str}{time_str}. {joined}."
-
-            # 4-5 or >5 results
-            top = flights[:3]
-            top_descs = [
-                f"{f.get('airline')} {f.get('flight_number')} at {f.get('price')} (departs {f.get('departure')})"
-                for f in top
-            ]
-            return f"I found {count} flight options from {orig} to {dest} for {date_str}{time_str}. Top options include {', '.join(top_descs)}."
+            flight_descs = []
+            for f in flights:
+                flight_descs.append(
+                    f"{f.get('airline')} {f.get('flight_number')} departing at {f.get('departure')} for {f.get('price')}"
+                )
+            if len(flight_descs) == 2:
+                joined = f"{flight_descs[0]}, and {flight_descs[1]}"
+            else:
+                joined = f"{', '.join(flight_descs[:-1])}, and {flight_descs[-1]}"
+            return f"I found {count} flight options from {orig} to {dest} for {date_str}{time_str}: {joined}."
 
         # 2. HOTEL RESULTS
         if res_type == "hotel_search":
@@ -1125,26 +1120,17 @@ class GeminiService:
             count = len(hotels)
             if count == 1:
                 h0 = hotels[0]
-                return f"I found 1 hotel option in {dest}{budget_str}. {h0.get('name')} is {h0.get('price_formatted')} per night with a {h0.get('rating')} star rating."
+                return f"I found 1 hotel option in {dest}{budget_str}: {h0.get('name')} at {h0.get('price_formatted') or ('₹' + str(h0.get('price', '')))} per night with a {h0.get('rating')} star rating."
 
-            if count <= 3:
-                hotel_descs = []
-                for h in hotels:
-                    rate = h.get('price_formatted') or (f"₹{h.get('price')}" if h.get('price') else "standard rate")
-                    hotel_descs.append(f"{h.get('name')} is {rate} per night")
-                if len(hotel_descs) == 2:
-                    joined = f"{hotel_descs[0]}, and {hotel_descs[1]}"
-                else:
-                    joined = f"{hotel_descs[0]}, {hotel_descs[1]}, and {hotel_descs[2]}"
-                return f"I found {count} hotel options near {dest}{budget_str}. {joined}."
-
-            # 4-5 or >5 results
-            top = hotels[:3]
-            top_descs = [
-                f"{h.get('name')} at {h.get('price_formatted') or ('₹' + str(h.get('price', '')))}"
-                for h in top
-            ]
-            return f"I found {count} hotel options near {dest}{budget_str}. Top recommendations include {', '.join(top_descs)}."
+            hotel_descs = []
+            for h in hotels:
+                rate = h.get('price_formatted') or (f"₹{h.get('price')}" if h.get('price') else "standard rate")
+                hotel_descs.append(f"{h.get('name')} at {rate} per night")
+            if len(hotel_descs) == 2:
+                joined = f"{hotel_descs[0]}, and {hotel_descs[1]}"
+            else:
+                joined = f"{', '.join(hotel_descs[:-1])}, and {hotel_descs[-1]}"
+            return f"I found {count} hotel options near {dest}{budget_str}: {joined}."
 
         # 3. TRAIN RESULTS
         if res_type == "train_search":
@@ -1164,27 +1150,16 @@ class GeminiService:
                 fare = t0.get('price') or t0.get('fare') or "standard fare"
                 return f"I found 1 {time_qualifier}train option from {orig} to {dest} for {date_str}: {t0.get('name')} at {fare}, departing at {t0.get('departure')}."
 
-            if count <= 3:
-                train_descs = []
-                for idx, t in enumerate(trains):
-                    fare = t.get('price') or t.get('fare') or ""
-                    fare_str = f" at {fare}" if fare else ""
-                    if idx == 0:
-                        train_descs.append(f"The first is {t.get('name')}{fare_str}")
-                    elif idx == count - 1:
-                        train_descs.append(f"and {t.get('name')}{fare_str}")
-                    else:
-                        train_descs.append(f"followed by {t.get('name')}{fare_str}")
-                joined = ", ".join(train_descs)
-                return f"I found {count} {time_qualifier}train options from {orig} to {dest} for {date_str}. {joined}."
-
-            # 4-5 or >5 results
-            top = trains[:3]
-            top_descs = [
-                f"{t.get('name')} at {t.get('price') or t.get('fare', '')} (departs {t.get('departure')})"
-                for t in top
-            ]
-            return f"I found {count} {time_qualifier}train options from {orig} to {dest} for {date_str}. The top options are {', '.join(top_descs)}."
+            train_descs = []
+            for t in trains:
+                fare = t.get('price') or t.get('fare') or "standard fare"
+                dep = f" departing at {t.get('departure')}" if t.get('departure') else ""
+                train_descs.append(f"{t.get('name')} at {fare}{dep}")
+            if len(train_descs) == 2:
+                joined = f"{train_descs[0]}, and {train_descs[1]}"
+            else:
+                joined = f"{', '.join(train_descs[:-1])}, and {train_descs[-1]}"
+            return f"I found {count} {time_qualifier}train options from {orig} to {dest} for {date_str}: {joined}."
 
         # 4. ROUTE / BUS RESULTS
         if res_type == "route_search":
@@ -1199,12 +1174,15 @@ class GeminiService:
                 r0 = routes[0]
                 return f"To travel from {orig} to {dest}, you can take {r0.get('mode', 'transit')} taking about {r0.get('duration')} for {r0.get('price')}."
 
-            if count <= 3:
-                route_descs = [
-                    f"{r.get('mode')} taking {r.get('duration')} for {r.get('price')}"
-                    for r in routes
-                ]
-                return f"I found {count} travel options between {orig} and {dest}: {', and '.join(route_descs)}."
+            route_descs = [
+                f"{r.get('mode')} taking {r.get('duration')} for {r.get('price')}"
+                for r in routes
+            ]
+            if len(route_descs) == 2:
+                joined = f"{route_descs[0]}, and {route_descs[1]}"
+            else:
+                joined = f"{', '.join(route_descs[:-1])}, and {route_descs[-1]}"
+            return f"I found {count} travel options between {orig} and {dest}: {joined}."
 
             return f"I found {count} travel options between {orig} and {dest}. The fastest option is {routes[0].get('mode')} taking {routes[0].get('duration')}."
 

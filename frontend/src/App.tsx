@@ -740,8 +740,8 @@ export default function App() {
   };
 
   // Manual Interrupt AI Button Click Handler
-  const handleInterruptAI = () => {
-    console.log('[INTERRUPT_AI] User clicked Interrupt AI button');
+  const handleInterruptAI = async () => {
+    console.log('[INTERRUPT_AI] User clicked Interrupt AI button. Stopping audio and starting mic...');
     rimePlayer.stopAudio('user_interrupt_button');
     recorder.stopInterruptionMonitoring();
     const nextCount = generationCount + 1;
@@ -749,8 +749,24 @@ export default function App() {
     setGenerationCount(nextCount);
     activeGenerationRef.current = nextGen;
     rimePlayer.setActiveGeneration(nextGen);
-    setPipelineState('idle');
-    setStatusMessage('AI interrupted');
+
+    // Automatically turn microphone ON and begin listening for user request
+    setUserTranscript('');
+    setPipelineState('recording');
+    setStatusMessage('Listening...');
+    setSttStatus('IDLE');
+    setGeminiStatus('IDLE');
+    setToolStatus('IDLE');
+
+    try {
+      await recorder.startRecording();
+    } catch (startErr: unknown) {
+      const e = startErr as Error;
+      console.error('[MIC] Failed to auto-start microphone on interrupt:', e);
+      setErrorMessage(`Microphone error: ${e.message}`);
+      setPipelineState('idle');
+      setStatusMessage('Ready');
+    }
   };
 
   // Test Rime Voice Shortcut
