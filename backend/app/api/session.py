@@ -141,17 +141,23 @@ async def process_user_transcript(payload: ChatRequest):
                 llm_res.content = "Hello! I'm VoiceTrip. How can I help with your travel plans today?"
 
     # Context Lifecycle Management:
-    # If the intent is greeting or conversational (non-travel), clear travel context so stale state doesn't persist
-    # If the intent is a NEW travel request of a different domain, clear old context to prevent cross-domain leakage
+    # Preserve active travel context across follow-ups, pending questions, and clarifications.
+    # Clear old context only when user explicitly switches to general non-travel conversation or standalone greeting.
     if updated_context:
-        if updated_context.intent in ["greeting", "conversational", "unclear"]:
+        if updated_context.intent == "greeting":
+            session_contexts[session_id] = None
+        elif updated_context.intent == "conversational":
+            # If purely conversational without pending travel parameters, clear travel context
+            if not updated_context.origin and not updated_context.destination:
+                session_contexts[session_id] = None
+            else:
+                session_contexts[session_id] = updated_context
+        elif updated_context.intent == "unclear" and not updated_context.needs_clarification:
             session_contexts[session_id] = None
         elif updated_context.request_type == "NEW" and prior_context:
-            # Clear old context fields if switching travel domain (e.g. hotel_search -> train_search)
             if updated_context.intent != prior_context.intent:
                 logger.info(
-                    f"[CONTEXT] Domain switch: {prior_context.intent} -> {updated_context.intent}. "
-                    f"Prior context cleared to prevent cross-domain leakage."
+                    f"[CONTEXT] Domain switch: {prior_context.intent} -> {updated_context.intent}."
                 )
             session_contexts[session_id] = updated_context
         else:

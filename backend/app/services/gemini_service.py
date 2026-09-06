@@ -45,7 +45,7 @@ Your task is to analyze the user's latest utterance in relation to PREVIOUS_CANO
 
 RULES:
 A. GREETING:
-   - User says "hello", "hi", "hey", "good morning", "good evening", etc.
+   - User says standalone "hello", "hi", "hey", "good morning", "good evening", etc.
    - intent = "greeting", request_type = "NEW", no travel fields.
 
 B. CONVERSATIONAL / GENERAL (NON-TRAVEL):
@@ -54,12 +54,17 @@ B. CONVERSATIONAL / GENERAL (NON-TRAVEL):
    - NEVER classify general, technical, or conversational questions as travel.
 
 C. TRAVEL REQUEST:
-   - User initiates a clear travel search ("find hotels in Delhi", "flights from Kolkata to Delhi", "show trains from NJP to Howrah", "bus from Mumbai to Pune", "accommodations in Goa").
+   - User initiates a travel search ("find hotels in Delhi", "flights from Kolkata to Delhi", "show trains from NJP to Howrah", "bus from Mumbai to Pune", "accommodations in Goa").
    - intent = appropriate travel intent ("hotel_search", "flight_search", "train_search", "route_search", "destination_info", etc.), request_type = "NEW".
 
-D. TRAVEL FOLLOW-UP:
-   - ONLY when PREVIOUS_CANONICAL_CONTEXT has an active travel search AND user is refining/modifying that search ("show cheaper ones", "only hotels", "what about tomorrow?", "which is closest to city center?", "actually evening", "under 5000").
-   - intent = preserved previous travel intent, request_type = "FOLLOW_UP", preserve all unchanged fields from PREVIOUS_CANONICAL_CONTEXT.
+D. TRAVEL FOLLOW-UP & SHORT ANSWERS (CRITICAL):
+   - When PREVIOUS_CANONICAL_CONTEXT has an active travel search AND user is refining, modifying, or answering a question:
+     - Date answer ("tomorrow", "today", "tonight", "what about tomorrow?", "Friday", "day after tomorrow"): update travel_date, request_type = "FOLLOW_UP", preserve intent, origin, destination.
+     - Mode switch/confirmation ("search flights", "flights", "check trains", "trains", "hotels"): update intent, request_type = "FOLLOW_UP", preserve origin, destination.
+     - Filter answer ("which one is cheapest?", "cheapest", "cheaper ones", "only morning", "under 5000"): update sort_by, time_constraint, budget, request_type = "FOLLOW_UP", preserve route.
+     - Passenger answer ("two", "for two", "3 people"): update passengers, request_type = "FOLLOW_UP".
+     - City answer ("Delhi", "Mumbai"): fill missing origin/destination, request_type = "FOLLOW_UP".
+   - NEVER classify short answers like "Tomorrow" or "Search flights" as general conversation or greeting when an active travel context exists! Preserve all unchanged fields from PREVIOUS_CANONICAL_CONTEXT.
 
 E. UNCLEAR / AMBIGUOUS:
    - User says something vague without sufficient context ("show me some", "which one", "change it").
@@ -208,12 +213,18 @@ class GeminiService:
         clean_text = re.sub(r"[^\w\s]", " ", lower).strip()
         words = clean_text.split()
 
-        # 1. GREETING
+        has_travel_cues = bool(re.search(
+            r"\b(?:train|trains|flight|flights|fly|hotel|hotels|stay|resort|bus|buses|route|cab|travel|ticket|tickets|booking|delhi|kolkata|mumbai|bangalore|bengaluru|chennai|goa|jaipur|howrah|sealdah|njp|pune|hyderabad)\b",
+            lower,
+            re.IGNORECASE,
+        ))
+
+        # 1. GREETING (Strict standalone greetings only)
         greetings = [
             "hello", "hi", "hey", "good morning", "good evening", "good afternoon",
             "good day", "hello there", "hi there", "hey there", "howdy", "greetings", "namaste"
         ]
-        if any(clean_text == g or clean_text.startswith(f"{g} ") for g in greetings):
+        if not has_travel_cues and any(clean_text == g for g in greetings):
             ctx = CanonicalTravelContext(
                 intent="greeting",
                 request_type="NEW",
@@ -222,22 +233,90 @@ class GeminiService:
             ctx.updated_summary = "Greeting"
             return ctx
 
-        # 2. CONVERSATIONAL / GENERAL (NON-TRAVEL)
+        # 2. SHORT TRAVEL FOLLOW-UP ANSWERS (CRITICAL: 'Tomorrow', 'Two', 'Search flights', 'Delhi', 'Cheapest')
+        # If active/prior travel context exists, resolve short answers against it immediately!
+        if prior_context and prior_context.intent in ["flight_search", "train_search", "hotel_search", "bus_search", "route_search", "destination_info", "general_travel"]:
+            # Check 2a: Short Date / Time Answer (e.g. "Tomorrow", "Today", "Tonight", "Day after tomorrow", "Friday")
+            is_date_answer = bool(re.search(r"\b(?:tomorrow|today|tonight|day after tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|next week|this weekend)\b", lower))
+            is_mode_switch = bool(re.search(r"\b(?:search flights?|find flights?|flights?|fly|search trains?|find trains?|trains?|rail|search hotels?|find hotels?|hotels?|bus(?:es)?)\b", lower))
+            is_filter_answer = bool(re.search(r"\b(?:cheapest|cheaper|lowest price|least expensive|best rated|highest rated|morning|evening|afternoon|night|closest|city center)\b", lower))
+            is_passenger_answer = bool(re.search(r"\b(?:two|three|four|\d+)\s*(?:passengers?|seats?|people|persons?)?\b", lower))
+
+            if is_date_answer or is_mode_switch or is_filter_answer or is_passenger_answer or self._is_follow_up_phrase(lower):
+                updated = prior_context.model_copy()
+                updated.request_type = "FOLLOW_UP"
+                updated.previous_summary = prev_summary
+                updated.needs_clarification = False
+                updated.clarification_question = None
+
+                # Handle Mode Switch
+                if "flight" in lower or "fly" in lower:
+                    updated.intent = "flight_search"
+                elif "train" in lower or "rail" in lower:
+                    updated.intent = "train_search"
+                elif "hotel" in lower or "stay" in lower or "resort" in lower:
+                    updated.intent = "hotel_search"
+                elif "bus" in lower:
+                    updated.intent = "bus_search"
+
+                # Handle Date
+                if "day after tomorrow" in lower:
+                    updated.travel_date = "day after tomorrow"
+                elif "tomorrow" in lower:
+                    updated.travel_date = "tomorrow"
+                elif "today" in lower or "tonight" in lower:
+                    updated.travel_date = "today"
+                    if "tonight" in lower:
+                        updated.time_constraint = "night"
+
+                # Handle Time
+                if "morning" in lower:
+                    updated.time_constraint = "morning"
+                elif "evening" in lower:
+                    updated.time_constraint = "evening"
+                elif "afternoon" in lower:
+                    updated.time_constraint = "afternoon"
+                elif "night" in lower:
+                    updated.time_constraint = "night"
+
+                # Handle Filters
+                if any(w in lower for w in ["cheapest", "cheaper", "lowest price", "least expensive", "low price"]):
+                    updated.sort_by = "cheapest"
+                elif any(w in lower for w in ["best rated", "highest rated", "rating", "best"]):
+                    updated.sort_by = "rating"
+                if any(w in lower for w in ["city center", "central"]):
+                    updated.location_preference = "city center"
+
+                # Handle Passengers
+                pass_match = re.search(r"\b(?:for\s+(\d+|two|three|four)|(\d+|two|three|four)\s+(?:people|persons?|passengers?|seats?))\b", lower)
+                if pass_match:
+                    val_str = pass_match.group(1) or pass_match.group(2)
+                    num_map = {"two": 2, "three": 3, "four": 4}
+                    updated.passengers = num_map.get(val_str, int(val_str) if val_str and val_str.isdigit() else updated.passengers)
+
+                # Check if user explicitly mentioned a new city
+                new_dest = self._extract_known_destination(user_message)
+                if new_dest and not any(w in lower for w in ["flight", "train", "hotel"]):
+                    if not updated.destination or updated.destination.lower() != new_dest.lower():
+                        updated.destination = new_dest
+
+                updated.updated_summary = updated.to_readable_summary()
+                return updated
+
+        # 3. CONVERSATIONAL / GENERAL (NON-TRAVEL)
         general_conversational_phrases = [
             "how are you", "how are you doing", "how do you do", "how is it going", "hows it going", "whats up",
             "what can you do", "what are your capabilities", "what can you help with", "who are you",
             "what is your name", "who made you", "who created you", "tell me about yourself",
             "thanks", "thank you", "thanks a lot", "thank you so much", "thx",
-            "okay", "ok", "great", "awesome", "cool", "perfect", "nice", "good", "got it", "understood", "alright",
             "bye", "goodbye", "see you", "see ya", "talk to you later", "good night",
             "tell me a joke", "joke", "make me laugh", "tell me something funny",
             "what is python", "python", "what is machine learning", "explain machine learning", "machine learning",
             "what is ai", "what is an llm", "tell me about coding", "what is programming",
-            "what is the capital of france", "capital of france", "what is the capital of",
+            "what is the capital of france", "capital of france",
             "what is the weather like", "whats the weather like", "whats the weather", "what is the weather",
             "what time is it", "whats the time", "what day is it",
-            "help", "help me", "i need help", "can you help me",
-            "yes", "no", "maybe", "sure", "of course", "not really", "nope",
+            "help", "i need help",
             "what is javascript", "what is java", "what is html", "what is css",
             "what is react", "what is nodejs", "what is sql", "what is a database",
             "tell me something", "tell me something interesting", "fun fact",
@@ -245,17 +324,18 @@ class GeminiService:
             "what are you", "are you a robot", "are you human", "are you real",
             "sing a song", "tell me a story", "recite a poem",
             "good job", "well done", "that was helpful", "you are great", "youre great",
-            "never mind", "forget it", "cancel", "stop", "nothing",
+            "never mind", "forget it", "cancel",
         ]
-        is_exact_general = any(clean_text == p or clean_text.startswith(f"{p} ") or clean_text.endswith(f" {p}") for p in general_conversational_phrases)
-        if is_exact_general:
-            ctx = CanonicalTravelContext(
-                intent="conversational",
-                request_type="NEW",
-                previous_summary=None,
-            )
-            ctx.updated_summary = "Conversational"
-            return ctx
+        if not has_travel_cues:
+            is_exact_general = any(clean_text == p for p in general_conversational_phrases)
+            if is_exact_general:
+                ctx = CanonicalTravelContext(
+                    intent="conversational",
+                    request_type="NEW",
+                    previous_summary=None,
+                )
+                ctx.updated_summary = "Conversational"
+                return ctx
 
         # Check for vague change follow-up ("Change it")
         if lower in ["change it", "change that", "modify it", "change"]:
@@ -283,7 +363,7 @@ class GeminiService:
                 clarification_question="Sure — what would you like me to help you find?",
             )
 
-        # 3. UNCLEAR / AMBIGUOUS (when no prior travel context exists)
+        # 4. UNCLEAR / AMBIGUOUS (when no prior travel context exists)
         unclear_phrases = [
             "show me some", "show some", "what about there", "which one", "which one is best",
             "show more", "tell me more", "show me", "options", "find some", "look up"
@@ -296,8 +376,7 @@ class GeminiService:
                 clarification_question="Sure — what would you like me to help you find?",
             )
 
-        # 4. ACTIVE TRAVEL FOLLOW-UPS (Refining active travel context)
-        # 4a. Active Hotel Follow-up
+        # 5. ACTIVE HOTEL FOLLOW-UP
         is_hotel_follow_up = prior_context and prior_context.intent == "hotel_search" and (
             not any(w in lower for w in [
                 "best places", "what to see", "attractions", "sightseeing", "places to visit",

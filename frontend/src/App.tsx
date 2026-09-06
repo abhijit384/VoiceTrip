@@ -2,28 +2,26 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import {
   Mic,
   Square,
-  Play,
-  RotateCcw,
   Volume2,
   User,
-  Bot,
   Terminal,
   Compass,
   Loader2,
   Clock,
-  Layers,
-  Radio,
   Lightbulb,
   AlertCircle,
   MessageSquarePlus,
+  History,
+  Send,
 } from 'lucide-react';
 import { useAuthoritativeRecorder } from './hooks/useAuthoritativeRecorder';
 import { useRimeAudioPlayer } from './hooks/useRimeAudioPlayer';
 import { unlockAudioContext } from './utils/audioContext';
 import { getApiBase } from './config';
-import type { ConversationTurn } from './types/voice';
-import { TravelResultCards } from './components/TravelResultCards';
+import type { ConversationTurn, ChatSession } from './types/voice';
 import { DemoWelcomeModal } from './components/DemoWelcomeModal';
+import { ChatMessageBubble } from './components/ChatMessageBubble';
+import { ChatHistorySidebar } from './components/ChatHistorySidebar';
 
 export type PipelineState =
   | 'idle'
@@ -48,6 +46,46 @@ interface DevAuditState {
   finalResponse: string;
 }
 
+const STORAGE_KEY_SESSIONS = 'voicetrip_sessions_v4';
+
+// Helper to generate meaningful conversation titles from user query & context
+function generateSessionTitle(query: string, ctx?: any): string {
+  if (ctx && ctx.intent) {
+    if (ctx.intent === 'flight_search' && ctx.origin && ctx.destination) {
+      return `Flights ${ctx.origin} → ${ctx.destination}`;
+    }
+    if (ctx.intent === 'train_search' && ctx.origin && ctx.destination) {
+      return `Trains ${ctx.origin} → ${ctx.destination}`;
+    }
+    if (ctx.intent === 'hotel_search' && ctx.destination) {
+      return `Hotels in ${ctx.destination}`;
+    }
+    if (ctx.intent === 'route_search' && ctx.destination) {
+      return `Route to ${ctx.destination}`;
+    }
+  }
+
+  const clean = query.trim();
+  if (clean.length <= 30) {
+    return clean.charAt(0).toUpperCase() + clean.slice(1);
+  }
+  return clean.slice(0, 28) + '...';
+}
+
+function createNewSessionObj(): ChatSession {
+  const id = `session_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+  return {
+    id,
+    title: 'New Travel Chat',
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    turns: [],
+    canonicalContext: null,
+    lastToolName: null,
+    lastToolResults: null,
+  };
+}
+
 export default function App() {
   const [userName, setUserName] = useState<string>(() => {
     if (typeof localStorage !== 'undefined') {
@@ -62,16 +100,45 @@ export default function App() {
     return false;
   });
 
+  // Multi-Chat Sessions State
+  const [sessions, setSessions] = useState<ChatSession[]>(() => {
+    if (typeof localStorage !== 'undefined') {
+      try {
+        const raw = localStorage.getItem(STORAGE_KEY_SESSIONS);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            return parsed;
+          }
+        }
+      } catch (e) {
+        console.warn('[STORAGE] Failed to parse sessions:', e);
+      }
+    }
+    return [createNewSessionObj()];
+  });
+
+  const [activeSessionId, setActiveSessionId] = useState<string>(() => {
+    return sessions[0]?.id || `session_${Date.now()}`;
+  });
+
+  const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(false);
+  const [textInput, setTextInput] = useState<string>('');
+
+  // Find active session
+  const activeSession = sessions.find((s) => s.id === activeSessionId) || sessions[0] || createNewSessionObj();
+
+  // Active Session Shortcut State
+  const turns = activeSession.turns || [];
+  const canonicalContext = activeSession.canonicalContext || null;
+  const lastToolName = activeSession.lastToolName || null;
+
   const [pipelineState, setPipelineState] = useState<PipelineState>('idle');
   const [userTranscript, setUserTranscript] = useState<string>('');
   const [aiTranscript, setAiTranscript] = useState<string>('');
   const [statusMessage, setStatusMessage] = useState<string>('Ready');
   const [generationCount, setGenerationCount] = useState<number>(1);
-  const [turns, setTurns] = useState<ConversationTurn[]>([]);
   const [showDevMode, setShowDevMode] = useState<boolean>(false);
-  const [lastToolName, setLastToolName] = useState<string | null>(null);
-  const [lastToolResults, setLastToolResults] = useState<any | null>(null);
-  const [canonicalContext, setCanonicalContext] = useState<any | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   // Developer Mode Status & Structured Audit Telemetry
@@ -79,7 +146,7 @@ export default function App() {
   const [geminiStatus, setGeminiStatus] = useState<'IDLE' | 'PENDING' | 'SUCCESS' | 'FAILED'>('IDLE');
   const [toolStatus, setToolStatus] = useState<'IDLE' | 'PENDING' | 'SUCCESS' | 'FAILED'>('IDLE');
   const [devAudit, setDevAudit] = useState<DevAuditState>({
-    sessionId: 'default',
+    sessionId: activeSessionId,
     turnId: 1,
     generationId: 'gen_1',
     previousContext: null,
@@ -96,6 +163,20 @@ export default function App() {
   const activeGenerationRef = useRef<string>(currentGenerationId);
   activeGenerationRef.current = currentGenerationId;
 
+  const activeSessionIdRef = useRef<string>(activeSessionId);
+  activeSessionIdRef.current = activeSessionId;
+
+  // Persist sessions to LocalStorage on change
+  useEffect(() => {
+    if (typeof localStorage !== 'undefined') {
+      try {
+        localStorage.setItem(STORAGE_KEY_SESSIONS, JSON.stringify(sessions));
+      } catch (e) {
+        console.warn('[STORAGE] Failed to save sessions:', e);
+      }
+    }
+  }, [sessions]);
+
   // Authoritative Microphone Recorder Hook reference for interruption
   const recorderRef = useRef<ReturnType<typeof useAuthoritativeRecorder> | null>(null);
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
@@ -110,7 +191,7 @@ export default function App() {
     }
   });
 
-  // Barge-in Speech Interruption Handler: Triggered when genuine user speech (>600ms) occurs during AI speech
+  // Barge-in Speech Interruption Handler
   const handleBargeInInterruption = useCallback(() => {
     if (rimePlayer.isPlaying || pipelineState === 'speaking') {
       console.log('[BARGE_IN] USER_SPEECH_DETECTED during AI speech. Halting Rime playback immediately...');
@@ -121,7 +202,6 @@ export default function App() {
       setGenerationCount(nextCount);
       activeGenerationRef.current = nextGen;
 
-      // CRITICAL: Set to 'idle', NOT 'recording' — mic activation must be fully manual
       setPipelineState('idle');
       setStatusMessage('AI interrupted — tap Start Mic to speak');
     }
@@ -135,12 +215,12 @@ export default function App() {
     document.title = 'VoiceTrip | Your AI Voice Travel Assistant';
   }, []);
 
-  // Auto-scroll chat history when new messages arrive
+  // Auto-scroll chat history when new messages or loading updates occur
   useEffect(() => {
     if (chatScrollRef.current) {
       chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
     }
-  }, [turns]);
+  }, [turns, pipelineState]);
 
   const handleDemoSignup = (name: string, email: string) => {
     setUserName(name);
@@ -152,9 +232,99 @@ export default function App() {
     setShowWelcomeModal(false);
   };
 
-  // Process finalized user speech through Gemini -> Tool -> Rime TTS (Unblocked Fast Path)
+  // Helper to update active session state immutably
+  const updateActiveSession = useCallback(
+    (updater: (prevSession: ChatSession) => ChatSession) => {
+      setSessions((prev) =>
+        prev.map((s) => (s.id === activeSessionIdRef.current ? updater(s) : s))
+      );
+    },
+    []
+  );
+
+  // Start a fresh, clean conversation (+ New Chat)
+  const handleNewChat = useCallback(() => {
+    console.log('[CHAT] User clicked + New Chat. Creating fresh conversation...');
+    rimePlayer.stopAudio('new_chat');
+    recorder.cancelRecording();
+
+    const newSess = createNewSessionObj();
+    setSessions((prev) => [newSess, ...prev]);
+    setActiveSessionId(newSess.id);
+    activeSessionIdRef.current = newSess.id;
+
+    const nextCount = generationCount + 1;
+    const nextGen = `gen_${nextCount}`;
+    setGenerationCount(nextCount);
+    activeGenerationRef.current = nextGen;
+
+    setPipelineState('idle');
+    setStatusMessage('Ready');
+    setUserTranscript('');
+    setAiTranscript('');
+    setErrorMessage(null);
+    setSttStatus('IDLE');
+    setGeminiStatus('IDLE');
+    setToolStatus('IDLE');
+
+    // Notify backend session store
+    fetch(`${getApiBase()}/api/chat/reset`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: newSess.id }),
+    }).catch(() => {});
+  }, [generationCount, recorder, rimePlayer]);
+
+  // Switch between existing conversations
+  const handleSelectSession = useCallback(
+    (sessionId: string) => {
+      if (sessionId === activeSessionId) return;
+      console.log(`[CHAT] Switching active chat to session: ${sessionId}`);
+      rimePlayer.stopAudio('switch_chat');
+      recorder.cancelRecording();
+
+      setActiveSessionId(sessionId);
+      activeSessionIdRef.current = sessionId;
+
+      const nextCount = generationCount + 1;
+      const nextGen = `gen_${nextCount}`;
+      setGenerationCount(nextCount);
+      activeGenerationRef.current = nextGen;
+
+      setPipelineState('idle');
+      setStatusMessage('Ready');
+      setUserTranscript('');
+      setAiTranscript('');
+      setErrorMessage(null);
+    },
+    [activeSessionId, generationCount, recorder, rimePlayer]
+  );
+
+  // Delete a conversation from history
+  const handleDeleteSession = useCallback(
+    (sessionId: string, e: React.MouseEvent) => {
+      e.stopPropagation();
+      setSessions((prev) => {
+        const filtered = prev.filter((s) => s.id !== sessionId);
+        if (filtered.length === 0) {
+          const fresh = createNewSessionObj();
+          setActiveSessionId(fresh.id);
+          activeSessionIdRef.current = fresh.id;
+          return [fresh];
+        }
+        if (sessionId === activeSessionIdRef.current) {
+          setActiveSessionId(filtered[0].id);
+          activeSessionIdRef.current = filtered[0].id;
+        }
+        return filtered;
+      });
+    },
+    []
+  );
+
+  // Unified Process Turn Handler for Voice & Text (ChatGPT-style)
   const processTurn = useCallback(
-    async (finalText: string, targetGen: string) => {
+    async (finalText: string, targetGen: string, targetSession: string) => {
       const cleanText = finalText.trim();
       if (!cleanText) {
         setPipelineState('idle');
@@ -165,32 +335,52 @@ export default function App() {
       setErrorMessage(null);
       setUserTranscript(cleanText);
       setPipelineState('thinking');
-      setStatusMessage('Finding travel options...');
+      setStatusMessage('Thinking...');
       setGeminiStatus('PENDING');
 
       const userTurnId = `turn_${Date.now()}_user_${targetGen}`;
-      // Initial user message record in history
-      setTurns((prev) => [
-        ...prev,
-        {
-          id: userTurnId,
-          generationId: targetGen,
-          sender: 'user',
-          text: cleanText,
-          rawTranscript: cleanText,
-          correctedTranscript: cleanText,
-          wasCorrected: false,
-          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        },
-      ]);
+      const assistantTurnId = `turn_${Date.now()}_assistant_${targetGen}`;
+
+      const userTurn: ConversationTurn = {
+        id: userTurnId,
+        generationId: targetGen,
+        sender: 'user',
+        text: cleanText,
+        rawTranscript: cleanText,
+        correctedTranscript: cleanText,
+        wasCorrected: false,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      };
+
+      // ChatGPT-style: Immediately create User bubble & Assistant loading indicator
+      const loadingAssistantTurn: ConversationTurn = {
+        id: assistantTurnId,
+        generationId: targetGen,
+        sender: 'assistant',
+        text: '',
+        isLoading: true,
+        loadingStatus: 'Thinking...',
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      };
+
+      updateActiveSession((sess) => {
+        const isFirstQuery = sess.turns.length === 0;
+        const newTitle = isFirstQuery ? generateSessionTitle(cleanText) : sess.title;
+        return {
+          ...sess,
+          title: newTitle,
+          updatedAt: Date.now(),
+          turns: [...sess.turns, userTurn, loadingAssistantTurn],
+        };
+      });
 
       try {
-        console.log(`[LLM] Calling /api/chat with prompt: "${cleanText}" (gen: ${targetGen})`);
+        console.log(`[LLM] Calling /api/chat with prompt: "${cleanText}" (session: ${targetSession}, gen: ${targetGen})`);
         const res = await fetch(`${getApiBase()}/api/chat`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            session_id: 'default',
+            session_id: targetSession,
             message: cleanText,
             generation_id: targetGen,
           }),
@@ -203,9 +393,9 @@ export default function App() {
         setGeminiStatus('SUCCESS');
         const data = await res.json();
 
-        // Stale generation barrier check
-        if (activeGenerationRef.current !== targetGen) {
-          console.warn(`[BARRIER] Stale LLM response dropped for superseded gen ${targetGen}`);
+        // Stale Barrier Check: prevent old/superseded generation responses from leaking
+        if (activeGenerationRef.current !== targetGen || activeSessionIdRef.current !== targetSession) {
+          console.warn(`[BARRIER] Stale LLM response dropped for gen ${targetGen} (active: ${activeGenerationRef.current})`);
           return;
         }
 
@@ -213,40 +403,40 @@ export default function App() {
         const correctedSpeech = data.corrected_transcript || cleanText;
         const wasCorr = Boolean(data.was_corrected);
 
-        // Update user transcript & turn history with autocorrection info
-        if (wasCorr && correctedSpeech) {
-          setUserTranscript(correctedSpeech);
-          setTurns((prev) =>
-            prev.map((t) =>
-              t.id === userTurnId
-                ? {
-                    ...t,
-                    text: correctedSpeech,
-                    rawTranscript: rawSpeech,
-                    correctedTranscript: correctedSpeech,
-                    wasCorrected: true,
-                    corrections: data.corrections || [],
-                  }
-                : t
-            )
-          );
-        }
-
         const ctx = data.canonical_context;
-        if (ctx) {
-          setCanonicalContext(ctx);
-        }
 
-        // Case A: Direct Conversational / Non-travel Text Response
+        // Update user turn if autocorrected
+        updateActiveSession((sess) => {
+          const updatedTurns = sess.turns.map((t) => {
+            if (t.id === userTurnId) {
+              return {
+                ...t,
+                text: correctedSpeech,
+                rawTranscript: rawSpeech,
+                correctedTranscript: correctedSpeech,
+                wasCorrected: wasCorr,
+                corrections: data.corrections || [],
+              };
+            }
+            return t;
+          });
+          const updatedTitle = sess.turns.length <= 2 ? generateSessionTitle(correctedSpeech, ctx) : sess.title;
+          return {
+            ...sess,
+            title: updatedTitle,
+            canonicalContext: ctx || sess.canonicalContext,
+            turns: updatedTurns,
+          };
+        });
+
+        // Case A: Direct Text / Conversational Response
         if (data.response_type === 'text' && data.text) {
           const spoken = data.text;
           setAiTranscript(spoken);
-          setLastToolName(null);
-          setLastToolResults(null);
           setToolStatus('IDLE');
 
           setDevAudit({
-            sessionId: data.session_id || 'default',
+            sessionId: targetSession,
             turnId: generationCount,
             generationId: targetGen,
             previousContext: ctx?.previous_summary || null,
@@ -259,16 +449,22 @@ export default function App() {
             finalResponse: spoken,
           });
 
-          setTurns((prev) => [
-            ...prev,
-            {
-              id: `turn_${Date.now()}_assistant_${targetGen}`,
-              generationId: targetGen,
-              sender: 'assistant',
-              text: spoken,
-              timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-            },
-          ]);
+          // Replace loading turn with real text response
+          updateActiveSession((sess) => ({
+            ...sess,
+            lastToolName: null,
+            lastToolResults: null,
+            turns: sess.turns.map((t) =>
+              t.id === assistantTurnId
+                ? {
+                    ...t,
+                    isLoading: false,
+                    text: spoken,
+                    timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                  }
+                : t
+            ),
+          }));
 
           setPipelineState('speaking');
           setStatusMessage('AI Speaking...');
@@ -278,7 +474,7 @@ export default function App() {
           return;
         }
 
-        // Case B: Travel Tool Call Required (Trains, Flights, Hotels, Routes, Destination Info)
+        // Case B: Tool Call Required (Trains, Flights, Hotels, Routes, Destination Info)
         if (data.response_type === 'tool_call' && data.tool_calls?.length > 0) {
           const toolCall = data.tool_calls[0];
           const toolName = toolCall?.name || 'search_trains';
@@ -286,15 +482,25 @@ export default function App() {
 
           setPipelineState('searching');
           setToolStatus('PENDING');
-          setStatusMessage(
+
+          const searchingLabel =
             toolName === 'search_flights'
-              ? 'Searching flights...'
+              ? 'Searching flight options...'
               : toolName === 'search_hotels'
-              ? 'Searching hotels...'
+              ? 'Searching hotel options...'
               : toolName === 'search_trains'
-              ? 'Searching trains...'
-              : 'Searching travel options...'
-          );
+              ? 'Searching train schedules...'
+              : 'Finding travel options...';
+
+          setStatusMessage(searchingLabel);
+
+          // Update loading bubble label to reflect active search tool
+          updateActiveSession((sess) => ({
+            ...sess,
+            turns: sess.turns.map((t) =>
+              t.id === assistantTurnId ? { ...t, loadingStatus: searchingLabel } : t
+            ),
+          }));
 
           let endpoint = `${getApiBase()}/api/tools/search_trains`;
           if (toolName === 'search_flights') endpoint = `${getApiBase()}/api/tools/search_flights`;
@@ -308,7 +514,7 @@ export default function App() {
             body: JSON.stringify({
               ...args,
               generation_id: targetGen,
-              session_id: 'default',
+              session_id: targetSession,
             }),
           });
 
@@ -319,54 +525,56 @@ export default function App() {
           setToolStatus('SUCCESS');
           const toolData = await toolRes.json();
 
-          if (activeGenerationRef.current !== targetGen) return;
+          // Barrier Check
+          if (activeGenerationRef.current !== targetGen || activeSessionIdRef.current !== targetSession) return;
 
-          // FAST PATH: Immediately render travel results on screen without waiting for TTS
-          setLastToolName(toolName);
-          setLastToolResults(toolData);
-
-          const assistantTurnId = `turn_${Date.now()}_assistant_tool_${targetGen}`;
           const initialSpoken =
             toolName === 'search_trains'
               ? `Found ${toolData.trains?.length || 0} trains between ${args.origin || toolData.origin || 'origin'} and ${args.destination || toolData.destination || 'destination'}.`
               : toolName === 'search_flights'
               ? `Found ${toolData.flights?.length || 0} flight options for your journey.`
               : toolName === 'search_hotels'
-              ? `Found top accommodation options in ${args.destination || toolData.destination || 'your destination'}.`
+              ? `Found accommodation options in ${args.destination || toolData.destination || 'your destination'}.`
               : `Found travel options for your request.`;
 
           setAiTranscript(initialSpoken);
 
-          setTurns((prev) => [
-            ...prev,
-            {
-              id: assistantTurnId,
-              generationId: targetGen,
-              sender: 'assistant',
-              text: initialSpoken,
-              timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-              toolDetails: {
-                toolName,
-                params: args,
-                executionTimeMs: toolData.execution_time_ms || 120,
-                cancelled: false,
-                results: toolData.trains || toolData.flights || toolData.hotels || toolData.routes || [],
-                rawResult: toolData,
-              },
-            },
-          ]);
+          // FAST PATH: Immediately attach result cards and replace loading state in the assistant chat bubble!
+          updateActiveSession((sess) => ({
+            ...sess,
+            lastToolName: toolName,
+            lastToolResults: toolData,
+            turns: sess.turns.map((t) =>
+              t.id === assistantTurnId
+                ? {
+                    ...t,
+                    isLoading: false,
+                    text: initialSpoken,
+                    timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                    toolDetails: {
+                      toolName,
+                      params: args,
+                      executionTimeMs: toolData.execution_time_ms || 120,
+                      cancelled: false,
+                      results: toolData.trains || toolData.flights || toolData.hotels || toolData.routes || [],
+                      rawResult: toolData,
+                    },
+                  }
+                : t
+            ),
+          }));
 
           setPipelineState('speaking');
           setStatusMessage('AI Speaking...');
 
-          // UNBLOCKED PARALLEL VOICE SYNTHESIS: Generate spoken summary and stream audio via Rime
+          // UNBLOCKED PARALLEL VOICE SYNTHESIS: Generate polished spoken summary & stream Rime TTS
           (async () => {
             try {
               const summaryRes = await fetch(`${getApiBase()}/api/chat/tool_result`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                  session_id: 'default',
+                  session_id: targetSession,
                   tool_name: toolName,
                   tool_results: toolData,
                   generation_id: targetGen,
@@ -375,18 +583,19 @@ export default function App() {
 
               if (!summaryRes.ok) return;
               const summaryData = await summaryRes.json();
-              if (activeGenerationRef.current !== targetGen) return;
+              if (activeGenerationRef.current !== targetGen || activeSessionIdRef.current !== targetSession) return;
 
               const spokenText = summaryData.text || initialSpoken;
               setAiTranscript(spokenText);
 
-              // Update the assistant message in chat history with final polished spoken summary
-              setTurns((prev) =>
-                prev.map((t) => (t.id === assistantTurnId ? { ...t, text: spokenText } : t))
-              );
+              // Update assistant message with final polished spoken summary
+              updateActiveSession((sess) => ({
+                ...sess,
+                turns: sess.turns.map((t) => (t.id === assistantTurnId ? { ...t, text: spokenText } : t)),
+              }));
 
               setDevAudit({
-                sessionId: data.session_id || 'default',
+                sessionId: targetSession,
                 turnId: generationCount,
                 generationId: targetGen,
                 previousContext: ctx?.previous_summary || null,
@@ -399,7 +608,7 @@ export default function App() {
                 finalResponse: spokenText,
               });
 
-              // Stream/Play authoritative Rime voice output
+              // Play Rime speech output
               await rimePlayer.playRimeSpeech(spokenText, targetGen);
               recorder.startInterruptionMonitoring();
             } catch (sumErr) {
@@ -415,14 +624,29 @@ export default function App() {
       } catch (err: unknown) {
         console.error('[PROCESS_TURN] Pipeline error:', err);
         setErrorMessage('Something went wrong while finding your travel options. Please try again.');
+
+        // Clean up loading state if error occurred
+        updateActiveSession((sess) => ({
+          ...sess,
+          turns: sess.turns.map((t) =>
+            t.id === assistantTurnId
+              ? {
+                  ...t,
+                  isLoading: false,
+                  text: 'I encountered an issue finding options. Please try again or rephrase your request.',
+                }
+              : t
+          ),
+        }));
+
         setPipelineState('idle');
         setStatusMessage('Ready');
       }
     },
-    [recorder, rimePlayer, generationCount]
+    [generationCount, recorder, rimePlayer, updateActiveSession]
   );
 
-  // Manual Microphone Button Click Handler: Strict Start / Stop & Send
+  // Manual Microphone Button Handler (Strict Start / Stop & Send)
   const handleToggleMic = async () => {
     await unlockAudioContext().catch(() => {});
     setErrorMessage(null);
@@ -456,8 +680,7 @@ export default function App() {
         setGenerationCount(nextCount);
         activeGenerationRef.current = nextGen;
 
-        // Run sequential pipeline: Gemini -> Tool -> Rime
-        await processTurn(result.text, nextGen);
+        await processTurn(result.text, nextGen, activeSessionIdRef.current);
       } catch (err: unknown) {
         const e = err as Error;
         console.error('[MIC] Stop/Transcribe error:', e);
@@ -490,6 +713,32 @@ export default function App() {
     }
   };
 
+  // Text Input Submission Handler (for typed messages)
+  const handleSendText = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!textInput.trim() || isBusy || recorder.isRecording) return;
+
+    const query = textInput.trim();
+    setTextInput('');
+
+    const nextCount = generationCount + 1;
+    const nextGen = `gen_${nextCount}`;
+    setGenerationCount(nextCount);
+    activeGenerationRef.current = nextGen;
+
+    await processTurn(query, nextGen, activeSessionIdRef.current);
+  };
+
+  // Suggestion Chip Click Handler
+  const handleSuggestionClick = async (suggestion: string) => {
+    if (isBusy || recorder.isRecording) return;
+    const nextCount = generationCount + 1;
+    const nextGen = `gen_${nextCount}`;
+    setGenerationCount(nextCount);
+    activeGenerationRef.current = nextGen;
+    await processTurn(suggestion, nextGen, activeSessionIdRef.current);
+  };
+
   // Manual Interrupt AI Button Click Handler
   const handleInterruptAI = () => {
     console.log('[INTERRUPT_AI] User clicked Interrupt AI button');
@@ -504,55 +753,12 @@ export default function App() {
     setStatusMessage('AI interrupted');
   };
 
-  // Test Rime Voice with proper pipeline state tracking
+  // Test Rime Voice Shortcut
   const handleTestRime = async () => {
     setErrorMessage(null);
     setPipelineState('speaking');
     setStatusMessage('Testing Rime voice...');
     await rimePlayer.testRimeVoice();
-  };
-
-  // Reset entire conversation
-  const handleReset = () => {
-    rimePlayer.stopAudio('reset');
-    recorder.cancelRecording();
-    fetch(`${getApiBase()}/api/chat/reset`, { method: 'POST' }).catch(() => {});
-    setPipelineState('idle');
-    setStatusMessage('Ready');
-    setGenerationCount(1);
-    activeGenerationRef.current = 'gen_1';
-    setUserTranscript('');
-    setAiTranscript('');
-    setLastToolName(null);
-    setLastToolResults(null);
-    setCanonicalContext(null);
-    setTurns([]);
-    setErrorMessage(null);
-    setSttStatus('IDLE');
-    setGeminiStatus('IDLE');
-    setToolStatus('IDLE');
-    setDevAudit({
-      sessionId: 'default',
-      turnId: 1,
-      generationId: 'gen_1',
-      previousContext: null,
-      userTranscript: '',
-      requestType: 'NEW',
-      mergedContext: null,
-      toolSelected: 'None',
-      toolArguments: null,
-      toolResults: null,
-      finalResponse: '',
-    });
-  };
-
-  const handleSuggestionClick = async (suggestion: string) => {
-    if (isBusy || recorder.isRecording) return;
-    const nextCount = generationCount + 1;
-    const nextGen = `gen_${nextCount}`;
-    setGenerationCount(nextCount);
-    activeGenerationRef.current = nextGen;
-    await processTurn(suggestion, nextGen);
   };
 
   const isBusy = pipelineState !== 'idle' && pipelineState !== 'recording';
@@ -564,46 +770,92 @@ export default function App() {
     pipelineState === 'searching' ||
     pipelineState === 'thinking';
 
-  // Live progressive speech display during recording (Requirement 7 & 8)
-  const displaySpeechText = recorder.isRecording
-    ? (recorder.interimTranscript || userTranscript || '')
-    : userTranscript;
-
   return (
-    <div className="min-h-screen bg-[#060a12] text-slate-100 flex flex-col items-center justify-between p-4 md:p-8 font-sans selection:bg-cyan-500/30 relative overflow-hidden">
+    <div className="min-h-screen bg-[#060a12] text-slate-100 flex flex-col items-center justify-between p-3 sm:p-6 md:p-8 font-sans selection:bg-cyan-500/30 relative overflow-hidden">
       {/* Ambient Background Effects */}
       <div className="fixed inset-0 pointer-events-none z-0">
         <div className="absolute top-[-20%] left-[-10%] w-[600px] h-[600px] rounded-full bg-cyan-500/[0.04] blur-[120px] animate-ambient-drift" />
         <div className="absolute bottom-[-15%] right-[-10%] w-[500px] h-[500px] rounded-full bg-purple-500/[0.04] blur-[120px] animate-ambient-drift-reverse" />
         <div className="absolute top-[40%] left-[50%] -translate-x-1/2 w-[300px] h-[300px] rounded-full bg-teal-500/[0.03] blur-[100px]" />
       </div>
+
       {/* DEMO WELCOME / SIGNUP MODAL */}
       {showWelcomeModal && (
-        <DemoWelcomeModal
-          initialName={userName}
-          onContinue={handleDemoSignup}
-        />
+        <DemoWelcomeModal initialName={userName} onContinue={handleDemoSignup} />
       )}
 
+      {/* CHAT HISTORY SIDEBAR / DRAWER */}
+      <ChatHistorySidebar
+        isOpen={isSidebarOpen}
+        onClose={() => setIsSidebarOpen(false)}
+        sessions={sessions}
+        activeSessionId={activeSessionId}
+        onSelectSession={handleSelectSession}
+        onNewChat={handleNewChat}
+        onDeleteSession={handleDeleteSession}
+      />
+
       {/* Top Header */}
-      <header className="relative z-10 w-full max-w-4xl flex items-center justify-between border-b border-slate-800/60 pb-4 mb-6">
+      <header className="relative z-10 w-full max-w-4xl flex items-center justify-between border-b border-slate-800/60 pb-3 mb-4 sm:mb-6">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-cyan-500 to-teal-400 p-0.5 shadow-md shadow-cyan-500/20">
-            <div className="w-full h-full rounded-[14px] bg-slate-950 flex items-center justify-center text-cyan-400">
-              <Compass className="w-5 h-5" />
+          {/* History Sidebar Drawer Toggle */}
+          <button
+            onClick={() => setIsSidebarOpen(true)}
+            id="chat-history-drawer-btn"
+            className="p-2 rounded-xl bg-slate-900/90 hover:bg-slate-800 text-slate-300 border border-slate-800 transition flex items-center gap-1.5 shadow-sm"
+            title="Open Chat History"
+          >
+            <History className="w-4 h-4 text-cyan-400" />
+            <span className="hidden sm:inline text-xs font-semibold">History</span>
+            <span className="text-[10px] bg-slate-800 text-slate-400 px-1.5 py-0.2 rounded-full font-mono">
+              {sessions.length}
+            </span>
+          </button>
+
+          {/* Logo & App Name */}
+          <div className="flex items-center gap-2.5">
+            <div className="w-9 h-9 rounded-2xl bg-gradient-to-tr from-cyan-500 to-teal-400 p-0.5 shadow-md shadow-cyan-500/20">
+              <div className="w-full h-full rounded-[14px] bg-slate-950 flex items-center justify-center text-cyan-400">
+                <Compass className="w-5 h-5" />
+              </div>
             </div>
-          </div>
-          <div>
-            <h1 className="text-xl md:text-2xl font-bold tracking-tight text-white flex items-center gap-2">
-              VoiceTrip
-            </h1>
-            <p className="text-xs text-slate-400">
-              Your AI Voice Travel Assistant
-            </p>
+            <div>
+              <h1 className="text-base sm:text-xl font-bold tracking-tight text-white flex items-center gap-2">
+                VoiceTrip
+              </h1>
+              <p className="text-[11px] text-slate-400 truncate max-w-[140px] sm:max-w-[220px]">
+                {activeSession.title}
+              </p>
+            </div>
           </div>
         </div>
 
-        <div className="flex items-center gap-2.5">
+        <div className="flex items-center gap-2">
+          {/* + New Chat Button on Top Bar */}
+          <button
+            onClick={handleNewChat}
+            id="top-new-chat-btn"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-gradient-to-r from-cyan-600 to-teal-600 hover:from-cyan-500 hover:to-teal-500 text-slate-950 font-bold text-xs shadow-md shadow-cyan-950/40 transition transform active:scale-95"
+            title="Start a fresh conversation"
+          >
+            <MessageSquarePlus className="w-4 h-4 text-slate-950" />
+            <span>+ New Chat</span>
+          </button>
+
+          {/* Developer Mode Toggle */}
+          <button
+            onClick={() => setShowDevMode(!showDevMode)}
+            id="dev-mode-toggle"
+            className={`hidden sm:flex px-3 py-1.5 rounded-xl text-xs font-medium border transition items-center gap-1.5 ${
+              showDevMode
+                ? 'bg-cyan-950 text-cyan-300 border-cyan-700 shadow-sm shadow-cyan-950/50'
+                : 'bg-slate-900/90 text-slate-400 border-slate-800 hover:text-slate-200 hover:border-slate-700'
+            }`}
+          >
+            <Terminal className="w-3.5 h-3.5" />
+            <span>Dev Mode</span>
+          </button>
+
           {/* Demo User Pill */}
           <button
             onClick={() => setShowWelcomeModal(true)}
@@ -613,75 +865,13 @@ export default function App() {
             <User className="w-3.5 h-3.5 text-cyan-400" />
             <span>{userName}</span>
           </button>
-
-          {/* Developer Mode Toggle */}
-          <button
-            onClick={() => setShowDevMode(!showDevMode)}
-            id="dev-mode-toggle"
-            className={`px-3 py-1.5 rounded-xl text-xs font-medium border transition flex items-center gap-1.5 ${
-              showDevMode
-                ? 'bg-cyan-950 text-cyan-300 border-cyan-700 shadow-sm shadow-cyan-950/50'
-                : 'bg-slate-900/90 text-slate-400 border-slate-800 hover:text-slate-200 hover:border-slate-700'
-            }`}
-          >
-            <Terminal className="w-3.5 h-3.5" />
-            <span>Developer Mode</span>
-          </button>
-
-          {/* Reset Conversation */}
-          <button
-            onClick={handleReset}
-            id="reset-btn"
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-900/90 hover:bg-slate-800 text-slate-400 hover:text-white border border-slate-800 transition"
-            title="Start a new conversation"
-          >
-            <MessageSquarePlus className="w-4 h-4" />
-            <span className="hidden sm:inline text-xs font-medium">New Chat</span>
-          </button>
         </div>
       </header>
 
       {/* Main Container */}
-      <main className="relative z-10 w-full max-w-4xl flex-1 flex flex-col gap-6">
-        {/* Welcome Greeting Banner (Requirement 2) */}
-        <div className="p-5 rounded-2xl bg-gradient-to-r from-slate-900/90 via-slate-900/60 to-slate-950/90 border border-slate-800 shadow-lg flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-          <div>
-            <h2 className="text-base sm:text-lg font-semibold text-white flex items-center gap-2">
-              <span>Hi, {userName} 👋</span>
-              <span className="text-slate-400 font-normal text-sm">Where would you like to go?</span>
-            </h2>
-            <p className="text-xs text-slate-400 mt-0.5">
-              Tap the microphone and speak naturally to explore trains, flights, hotels, and custom itineraries.
-            </p>
-          </div>
-
-          {/* Speech State Indicator Pill (Requirement 9) */}
-          <div className="flex items-center gap-2 self-start sm:self-center px-3 py-1.5 rounded-full bg-slate-950/80 border border-slate-800 text-xs shadow-inner">
-            <span
-              className={`w-2.5 h-2.5 rounded-full transition-all duration-300 ${
-                recorder.isRecording
-                  ? 'bg-red-500 animate-ping'
-                  : pipelineState === 'speaking'
-                  ? 'bg-purple-400 animate-pulse'
-                  : isBusy
-                  ? 'bg-amber-400 animate-pulse'
-                  : 'bg-emerald-400 shadow-[0_0_8px_#34d399]'
-              }`}
-            />
-            <span className="font-medium text-slate-200" id="pipeline-status-text">
-              {recorder.isRecording
-                ? 'Recording'
-                : pipelineState === 'speaking'
-                ? 'AI Speaking'
-                : isBusy
-                ? statusMessage
-                : 'Ready'}
-            </span>
-          </div>
-        </div>
-
-        {/* SECTION 1: CENTRAL MICROPHONE EXPERIENCE (Requirements 4, 5, 6, 10) */}
-        <div className="relative p-6 sm:p-8 rounded-3xl bg-gradient-to-b from-slate-900/80 to-slate-950/95 border border-slate-700/40 shadow-[0_8px_40px_-12px_rgba(0,0,0,0.8),0_0_80px_-30px_rgba(6,182,212,0.15)] backdrop-blur-2xl flex flex-col items-center justify-center gap-6 overflow-hidden">
+      <main className="relative z-10 w-full max-w-4xl flex-1 flex flex-col gap-5">
+        {/* SECTION 1: CENTRAL MICROPHONE EXPERIENCE */}
+        <div className="relative p-5 sm:p-7 rounded-3xl bg-gradient-to-b from-slate-900/80 to-slate-950/95 border border-slate-700/40 shadow-[0_8px_40px_-12px_rgba(0,0,0,0.8),0_0_80px_-30px_rgba(6,182,212,0.15)] backdrop-blur-2xl flex flex-col items-center justify-center gap-5 overflow-hidden">
           {/* Subtle Ambient Glow */}
           <div
             className={`absolute w-80 h-80 rounded-full blur-[100px] pointer-events-none transition-all duration-700 ${
@@ -695,7 +885,7 @@ export default function App() {
             }`}
           />
 
-          {/* Helper Message Banner (Requirement 6) */}
+          {/* Helper Message Banner */}
           <div
             className={`transition-all duration-300 flex items-center gap-2 px-4 py-1.5 rounded-full text-xs font-medium ${
               recorder.isRecording
@@ -708,22 +898,24 @@ export default function App() {
           </div>
 
           {/* Central Microphone Button & Controls Row */}
-          <div className="relative flex flex-col items-center gap-5">
+          <div className="relative flex flex-col items-center gap-4">
             {/* Animated Orb Ring around Mic Button */}
-            <div className={`absolute w-52 h-52 sm:w-56 sm:h-56 rounded-full transition-all duration-500 ${
-              recorder.isRecording
-                ? 'orb-ring-recording'
-                : pipelineState === 'speaking'
-                ? 'orb-ring-speaking'
-                : isBusy
-                ? 'orb-ring-busy'
-                : 'orb-ring-idle'
-            }`} />
+            <div
+              className={`absolute w-44 h-44 sm:w-52 sm:h-52 rounded-full transition-all duration-500 ${
+                recorder.isRecording
+                  ? 'orb-ring-recording'
+                  : pipelineState === 'speaking'
+                  ? 'orb-ring-speaking'
+                  : isBusy
+                  ? 'orb-ring-busy'
+                  : 'orb-ring-idle'
+              }`}
+            />
             <button
               onClick={handleToggleMic}
               disabled={isBusy}
               id="mic-main-btn"
-              className={`relative z-10 w-44 h-44 sm:w-48 sm:h-48 rounded-full font-bold text-base flex flex-col items-center justify-center gap-2 shadow-2xl transition-all duration-300 transform active:scale-95 group ${
+              className={`relative z-10 w-36 h-36 sm:w-44 sm:h-44 rounded-full font-bold text-base flex flex-col items-center justify-center gap-1.5 shadow-2xl transition-all duration-300 transform active:scale-95 group ${
                 recorder.isRecording
                   ? 'bg-gradient-to-b from-red-500 to-rose-600 text-white animate-recording-pulse border-4 border-red-300/40 shadow-[0_0_50px_-5px_rgba(239,68,68,0.5)]'
                   : isBusy
@@ -733,47 +925,46 @@ export default function App() {
             >
               {recorder.isRecording ? (
                 <>
-                  <div className="p-3.5 rounded-full bg-red-700/80 shadow-inner">
-                    <Square className="w-8 h-8 fill-current text-white" />
+                  <div className="p-3 rounded-full bg-red-700/80 shadow-inner">
+                    <Square className="w-7 h-7 fill-current text-white" />
                   </div>
-                  <span className="text-sm font-extrabold tracking-wider uppercase">
+                  <span className="text-xs sm:text-sm font-extrabold tracking-wider uppercase">
                     STOP &amp; SEND
                   </span>
-                  <span className="text-[11px] font-medium text-red-100 opacity-90">
-                    Click to send message
+                  <span className="text-[10px] font-medium text-red-100 opacity-90">
+                    Click to send
                   </span>
                 </>
               ) : isBusy ? (
                 <>
-                  <Loader2 className="w-8 h-8 animate-spin text-amber-400" />
-                  <span className="text-sm font-bold tracking-wider uppercase text-slate-200">
+                  <Loader2 className="w-7 h-7 animate-spin text-amber-400" />
+                  <span className="text-xs sm:text-sm font-bold tracking-wider uppercase text-slate-200">
                     {statusMessage}
                   </span>
-                  <span className="text-[10px] text-slate-400">Processing request...</span>
+                  <span className="text-[10px] text-slate-400">Processing...</span>
                 </>
               ) : (
                 <>
-                  <div className="p-3.5 rounded-full bg-slate-950/30 group-hover:scale-110 transition duration-300">
-                    <Mic className="w-8 h-8 text-slate-950" />
+                  <div className="p-3 rounded-full bg-slate-950/30 group-hover:scale-110 transition duration-300">
+                    <Mic className="w-7 h-7 text-slate-950" />
                   </div>
-                  <span className="text-base font-extrabold tracking-wider uppercase text-slate-950">
+                  <span className="text-sm sm:text-base font-extrabold tracking-wider uppercase text-slate-950">
                     START MIC
                   </span>
-                  <span className="text-[11px] font-medium text-slate-900 opacity-80">
-                    Tap to start speaking
+                  <span className="text-[10px] font-medium text-slate-900 opacity-80">
+                    Tap to speak
                   </span>
                 </>
               )}
             </button>
 
-            {/* Action Buttons Row: Interrupt AI + Test Rime Voice beside Mic Controls */}
-            <div className="flex flex-wrap items-center justify-center gap-3">
-              {/* Interrupt AI Button - Moved to Microphone Control Area */}
+            {/* Action Buttons Row: Interrupt AI + Test Rime Voice */}
+            <div className="flex flex-wrap items-center justify-center gap-2.5">
               <button
                 onClick={handleInterruptAI}
                 disabled={!isAiSpeakingOrGenerating}
                 id="interrupt-ai-btn"
-                className={`px-4 py-2.5 rounded-xl text-xs font-bold border flex items-center gap-2 transition duration-200 shadow-sm ${
+                className={`px-3.5 py-2 rounded-xl text-xs font-bold border flex items-center gap-1.5 transition duration-200 shadow-sm ${
                   isAiSpeakingOrGenerating
                     ? 'bg-red-600 hover:bg-red-500 text-white border-red-400 shadow-lg shadow-red-950/60 animate-pulse ring-2 ring-red-400/30 cursor-pointer'
                     : 'bg-slate-950 text-slate-600 border-slate-800 cursor-not-allowed opacity-50'
@@ -784,32 +975,31 @@ export default function App() {
                 <span>Interrupt AI</span>
               </button>
 
-              {/* Test Rime Button Shortcut */}
               <button
                 onClick={handleTestRime}
                 disabled={recorder.isRecording || isBusy}
                 id="test-rime-btn"
-                className="px-4 py-2.5 rounded-xl text-xs font-medium bg-purple-950/40 hover:bg-purple-900/50 text-purple-300 border border-purple-800/40 transition flex items-center gap-2 shadow-sm"
+                className="px-3.5 py-2 rounded-xl text-xs font-medium bg-purple-950/40 hover:bg-purple-900/50 text-purple-300 border border-purple-800/40 transition flex items-center gap-1.5 shadow-sm"
                 title="Test Rime TTS Voice directly"
               >
                 <Volume2 className="w-3.5 h-3.5 text-purple-400" />
-                <span>TEST RIME VOICE</span>
+                <span>Test Rime</span>
               </button>
             </div>
           </div>
 
-          {/* Under-Microphone Device Info & Live Meter (Requirement 5) */}
-          <div className="w-full max-w-xl flex flex-col gap-3 pt-2">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between text-xs gap-2">
+          {/* Under-Microphone Device Info & Live Meter */}
+          <div className="w-full max-w-xl flex flex-col gap-2.5 pt-1">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between text-xs gap-1.5">
               <span className="text-slate-400 flex items-center gap-1.5">
-                Using microphone:{' '}
-                <strong className="text-slate-200 truncate max-w-[240px]" id="using-mic-label">
+                Microphone:{' '}
+                <strong className="text-slate-200 truncate max-w-[220px]" id="using-mic-label">
                   {recorder.activeDeviceLabel}
                 </strong>
               </span>
               <span
                 id="recording-status-badge"
-                className={`font-semibold uppercase tracking-wider px-2.5 py-0.5 rounded text-[10px] self-start sm:self-auto ${
+                className={`font-semibold uppercase tracking-wider px-2 py-0.5 rounded text-[10px] self-start sm:self-auto ${
                   recorder.isRecording
                     ? 'bg-red-500/20 text-red-400 border border-red-500/40'
                     : 'bg-slate-800 text-slate-400'
@@ -819,10 +1009,10 @@ export default function App() {
               </span>
             </div>
 
-            {/* Real Hardware Microphone Volume Meter */}
+            {/* Hardware Volume Meter */}
             <div className="flex items-center gap-3">
               <span className="text-[11px] font-mono text-slate-500 w-16">Mic Level:</span>
-              <div className="flex-1 h-2.5 rounded-full bg-slate-950 overflow-hidden p-0.5 border border-slate-800/80">
+              <div className="flex-1 h-2 rounded-full bg-slate-950 overflow-hidden p-0.5 border border-slate-800/80">
                 <div
                   id="mic-volume-bar"
                   className={`h-full rounded-full transition-all duration-75 ${
@@ -839,29 +1029,12 @@ export default function App() {
                 {recorder.micVolume}%
               </span>
             </div>
-
-            {/* Microphone Device Dropdown Switcher */}
-            <div className="flex items-center gap-2">
-              <select
-                id="mic-device-select"
-                value={recorder.selectedDeviceId}
-                onChange={(e) => recorder.selectDevice(e.target.value)}
-                disabled={recorder.isRecording}
-                className="w-full text-xs bg-slate-950/80 border border-slate-800 rounded-xl px-3 py-2 text-slate-300 focus:outline-none focus:border-cyan-500 transition"
-              >
-                {recorder.devices.map((d) => (
-                  <option key={d.deviceId} value={d.deviceId}>
-                    {d.label}
-                  </option>
-                ))}
-              </select>
-            </div>
           </div>
         </div>
 
-        {/* Error Notice if any (Requirement 25) */}
+        {/* Error Notice */}
         {errorMessage && (
-          <div className="p-4 rounded-2xl bg-red-950/40 border border-red-800/60 text-xs text-red-200 flex items-center justify-between gap-3 animate-slide-up">
+          <div className="p-3.5 rounded-2xl bg-red-950/40 border border-red-800/60 text-xs text-red-200 flex items-center justify-between gap-3 animate-slide-up">
             <div className="flex items-center gap-2">
               <AlertCircle className="w-4 h-4 text-red-400 flex-shrink-0" />
               <span>{errorMessage}</span>
@@ -875,351 +1048,162 @@ export default function App() {
           </div>
         )}
 
-        {/* SECTION 2: LIVE TRANSCRIPTION & AI RESPONSE CARDS (Requirements 7, 8, 12, 13) */}
-        <div className="grid grid-cols-1 gap-5">
-          {/* User Speech & Live Transcription Card */}
-          <div className="p-5 rounded-2xl glass-card shadow-xl flex flex-col gap-2.5">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-semibold uppercase tracking-wider text-cyan-400 flex items-center gap-2">
-                <User className="w-3.5 h-3.5 text-cyan-400" />
-                {recorder.isRecording ? 'Live Transcription' : 'Your Speech'}
+        {/* SECTION 2: CHATGPT-STYLE CONVERSATION THREAD */}
+        <div className="p-4 sm:p-6 rounded-3xl glass-card border-slate-800/80 shadow-2xl flex flex-col gap-4 min-h-[380px]">
+          <div className="flex items-center justify-between pb-3 border-b border-slate-800/80">
+            <div className="flex items-center gap-2">
+              <Clock className="w-4 h-4 text-cyan-400" />
+              <span className="text-xs font-bold uppercase tracking-wider text-slate-300">
+                {activeSession.title || 'Conversation'}
               </span>
-
-              {recorder.isRecording ? (
-                <span className="flex items-center gap-1.5 text-[10px] font-mono px-2.5 py-0.5 rounded-full bg-red-950/80 text-red-300 border border-red-500/40 animate-pulse" id="live-transcription-badge">
-                  <Radio className="w-3 h-3 text-red-400" />
-                  🔴 LIVE
-                </span>
-              ) : userTranscript ? (
-                <span className="flex items-center gap-1.5 text-[10px] font-mono px-2.5 py-0.5 rounded-full bg-slate-800 text-slate-300 border border-slate-700" id="final-transcription-badge">
-                  FINAL
-                </span>
-              ) : null}
             </div>
 
-            <p className="text-sm text-slate-100 leading-relaxed min-h-[30px]" id="user-speech-text">
-              {recorder.isRecording ? (
-                recorder.interimTranscript ? (
-                  <span className="text-cyan-200 font-medium inline-flex items-center flex-wrap gap-1" id="live-transcript-text">
-                    <span className="live-word">{recorder.interimTranscript}</span>
-                    <span className="live-cursor" />
-                  </span>
-                ) : (
-                  <span className="text-slate-500 italic inline-flex items-center gap-1">
-                    <span>Listening... speak your travel request</span>
-                    <span className="live-cursor" />
-                  </span>
-                )
-              ) : userTranscript ? (
-                <span className="text-slate-100" id="final-transcript-text">
-                  {userTranscript}
-                </span>
-              ) : (
-                <span className="text-slate-500 italic">
-                  Tap <strong className="text-slate-400 font-medium">Start Mic</strong>, speak your travel plan, then click <strong className="text-slate-400 font-medium">Stop &amp; Send</strong>.
+            <div className="flex items-center gap-2">
+              {rimePlayer.isPlaying && (
+                <span className="flex items-center gap-1 text-[11px] text-purple-300 bg-purple-950/60 border border-purple-800/50 px-2.5 py-0.5 rounded-full animate-pulse font-medium">
+                  <Volume2 className="w-3.5 h-3.5 text-purple-400" />
+                  AI Speaking...
                 </span>
               )}
-            </p>
-
-            {/* Quick Suggestion Chips on Empty State (Requirement 24) */}
-            {!displaySpeechText && turns.length === 0 && (
-              <div className="pt-2 border-t border-slate-800/60 flex flex-wrap items-center gap-2">
-                <span className="text-[11px] text-slate-500 font-medium">Try asking:</span>
-                {[
-                  'Find hotels near Goa',
-                  'Trains from NJP to Howrah tomorrow evening',
-                  'Flights from Delhi to Mumbai tomorrow',
-                  'Best places to visit in Kerala',
-                ].map((s, idx) => (
-                  <button
-                    key={idx}
-                    onClick={() => handleSuggestionClick(s)}
-                    disabled={isBusy || recorder.isRecording}
-                    className="px-3 py-1 rounded-lg text-xs bg-slate-950/80 hover:bg-slate-800 text-slate-300 border border-slate-800/80 hover:border-cyan-500/40 transition flex items-center gap-1"
-                  >
-                    <span>{s}</span>
-                  </button>
-                ))}
-              </div>
-            )}
+              <span className="text-[11px] text-slate-500 font-mono">
+                {turns.filter((t) => !t.isLoading).length} turns
+              </span>
+            </div>
           </div>
 
-          {/* AI Response Card & Rime Voice Controls (Requirements 12 & 13) */}
-          <div className="p-5 sm:p-6 rounded-2xl glass-card border-purple-900/30 shadow-xl flex flex-col gap-4">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-800/80">
-              <span className="text-xs font-semibold uppercase tracking-wider text-purple-400 flex items-center gap-2">
-                <Bot className="w-4 h-4 text-purple-400" />
-                AI Response
-              </span>
-
-              {/* Rime Voice Toolbar */}
-              <div className="flex flex-wrap items-center gap-2">
-                <div className="flex items-center gap-2 mr-1">
-                  <span className="text-[11px] text-purple-300 font-medium flex items-center gap-1">
-                    <Volume2 className="w-3.5 h-3.5 text-purple-400" />
-                    AI Voice:
-                  </span>
-
-                  {/* Equalizer bars active ONLY during Rime playback */}
-                  {rimePlayer.isPlaying && (
-                    <div className="flex items-center gap-0.5 h-4 px-1">
-                      <span className="voice-bar" />
-                      <span className="voice-bar" />
-                      <span className="voice-bar" />
-                      <span className="voice-bar" />
-                      <span className="voice-bar" />
-                    </div>
-                  )}
-
-                  <span
-                    id="ai-voice-status-indicator"
-                    className={`px-2.5 py-0.5 rounded-lg text-[10px] font-medium tracking-wide ${
-                      rimePlayer.isPlaying
-                        ? 'bg-purple-500/20 text-purple-300 border border-purple-500/40 animate-pulse'
-                        : rimePlayer.autoplayBlocked
-                        ? 'bg-yellow-500/20 text-yellow-300 border border-yellow-500/40'
-                        : rimePlayer.hasAudio
-                        ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
-                        : 'bg-slate-950 text-slate-500 border border-slate-800'
-                    }`}
-                  >
-                    {rimePlayer.isPlaying
-                      ? '🔊 AI is speaking...'
-                      : rimePlayer.autoplayBlocked
-                      ? '⚠️ Click Play Voice'
-                      : rimePlayer.hasAudio
-                      ? '🔊 Voice Ready'
-                      : '🔇 Standby'}
-                  </span>
+          {/* Messages Stream */}
+          <div
+            ref={chatScrollRef}
+            className="flex-1 overflow-y-auto space-y-4 max-h-[520px] pr-1.5 scroll-smooth"
+            id="chat-messages-container"
+          >
+            {turns.length === 0 ? (
+              <div className="py-12 flex flex-col items-center justify-center text-center gap-3">
+                <div className="w-12 h-12 rounded-2xl bg-cyan-950/40 border border-cyan-800/40 flex items-center justify-center text-cyan-400">
+                  <Compass className="w-6 h-6" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-semibold text-white">Start your journey with VoiceTrip</h3>
+                  <p className="text-xs text-slate-400 max-w-sm mt-1">
+                    Tap the microphone or pick a prompt below to search trains, flights, hotels, and custom travel plans.
+                  </p>
                 </div>
 
-                {/* Play Voice Button */}
-                <button
-                  onClick={rimePlayer.playCachedAudio}
-                  disabled={!aiTranscript && !rimePlayer.hasAudio}
-                  id="play-voice-btn"
-                  className={`px-3 py-1.5 rounded-xl text-xs font-medium border flex items-center gap-1.5 transition ${
-                    rimePlayer.isPlaying
-                      ? 'bg-purple-950/40 text-purple-400 border-purple-800/40'
-                      : !aiTranscript && !rimePlayer.hasAudio
-                      ? 'bg-slate-950 text-slate-600 border-slate-800 cursor-not-allowed'
-                      : 'bg-purple-900/40 hover:bg-purple-800/50 text-purple-200 border-purple-700/60 shadow-sm'
-                  }`}
-                  title="Play generated Rime audio"
-                >
-                  <Play className="w-3.5 h-3.5 fill-current text-purple-400" />
-                  <span>{rimePlayer.isPlaying ? 'Playing...' : 'Play Voice'}</span>
-                </button>
-
-                {/* Stop Voice Button */}
-                <button
-                  onClick={() => rimePlayer.stopAudio('user_click')}
-                  disabled={!rimePlayer.isPlaying}
-                  id="stop-voice-btn"
-                  className={`px-2.5 py-1.5 rounded-xl text-xs font-medium border flex items-center gap-1 transition ${
-                    rimePlayer.isPlaying
-                      ? 'bg-red-950/50 text-red-300 border-red-800/60 hover:bg-red-900/60'
-                      : 'bg-slate-950 text-slate-600 border-slate-800 cursor-not-allowed'
-                  }`}
-                  title="Stop audio playback"
-                >
-                  <Square className="w-3 h-3 fill-current text-red-400" />
-                  <span>Stop Voice</span>
-                </button>
+                {/* Suggestion Chips */}
+                <div className="pt-3 flex flex-wrap items-center justify-center gap-2 max-w-lg">
+                  {[
+                    'Flights from Kolkata to Mumbai',
+                    'Find hotels in Delhi',
+                    'Trains from NJP to Howrah tomorrow',
+                    'What is Python?',
+                  ].map((s, idx) => (
+                    <button
+                      key={idx}
+                      onClick={() => handleSuggestionClick(s)}
+                      disabled={isBusy || recorder.isRecording}
+                      className="px-3 py-1.5 rounded-xl text-xs bg-slate-900/90 hover:bg-slate-800 text-slate-300 border border-slate-800 hover:border-cyan-500/40 transition shadow-sm flex items-center gap-1.5 transform active:scale-95"
+                    >
+                      <span>{s}</span>
+                    </button>
+                  ))}
+                </div>
               </div>
-            </div>
-
-            {/* AI Response Text */}
-            <p className="text-sm text-slate-100 leading-relaxed min-h-[36px]" id="ai-response-text">
-              {aiTranscript || (
-                <span className="text-slate-500 italic">
-                  AI travel recommendations and Rime voice will appear here.
-                </span>
-              )}
-            </p>
-
-            {/* SECTION 3: TRAVEL RESULTS CARDS (Requirements 14, 15, 16) */}
-            {lastToolResults && (
-              <TravelResultCards
-                toolName={lastToolName}
-                toolResults={lastToolResults}
-                canonicalContext={canonicalContext}
-              />
+            ) : (
+              turns.map((t) => (
+                <ChatMessageBubble
+                  key={t.id}
+                  turn={t}
+                  onPlayVoice={(spoken) => rimePlayer.playRimeSpeech(spoken, currentGenerationId)}
+                  isPlayingVoice={rimePlayer.isPlaying}
+                />
+              ))
             )}
           </div>
+
+          {/* Quick Typed Input Form for Chat */}
+          <form
+            onSubmit={handleSendText}
+            className="pt-3 border-t border-slate-800/80 flex items-center gap-2"
+          >
+            <input
+              type="text"
+              value={textInput}
+              onChange={(e) => setTextInput(e.target.value)}
+              placeholder={
+                recorder.isRecording
+                  ? 'Listening to microphone...'
+                  : 'Type a message or travel destination...'
+              }
+              disabled={recorder.isRecording || isBusy}
+              className="flex-1 bg-slate-950/90 border border-slate-800 rounded-2xl px-4 py-2.5 text-xs sm:text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-cyan-500 transition shadow-inner"
+            />
+            <button
+              type="submit"
+              disabled={!textInput.trim() || isBusy || recorder.isRecording}
+              className={`p-2.5 rounded-2xl transition flex items-center justify-center ${
+                textInput.trim() && !isBusy && !recorder.isRecording
+                  ? 'bg-gradient-to-r from-cyan-500 to-teal-500 text-slate-950 shadow-md shadow-cyan-950/50 hover:from-cyan-400 hover:to-teal-400 cursor-pointer'
+                  : 'bg-slate-900 text-slate-600 border border-slate-800 cursor-not-allowed'
+              }`}
+              title="Send message"
+            >
+              <Send className="w-4 h-4" />
+            </button>
+          </form>
         </div>
 
-        {/* SECTION 4: CONVERSATION HISTORY (Requirement 17) */}
-        {turns.length > 0 && (
-          <div className="p-6 rounded-2xl bg-slate-900/70 border border-slate-800 flex flex-col gap-3.5 shadow-lg">
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-400 flex items-center gap-2">
-              <Clock className="w-3.5 h-3.5 text-slate-400" />
-              Chat History
-            </h3>
-            <div ref={chatScrollRef} className="flex flex-col gap-3 max-h-80 overflow-y-auto pr-1">
-              {turns.map((t) => (
-                <div
-                  key={t.id}
-                  className={`p-4 rounded-2xl text-xs flex flex-col gap-1.5 shadow-sm transition ${
-                    t.sender === 'user'
-                      ? 'bg-cyan-950/30 border border-cyan-800/40 text-cyan-100 self-end max-w-[85%]'
-                      : 'bg-slate-950/80 border border-purple-900/30 text-slate-200 self-start max-w-[85%]'
-                  }`}
-                >
-                  <div className="flex items-center justify-between text-[10px] text-slate-400 gap-4">
-                    <span className="font-bold uppercase tracking-wider text-slate-300 flex items-center gap-1.5">
-                      {t.sender === 'user' ? (
-                        <>
-                          <User className="w-3 h-3 text-cyan-400" />
-                          <span>You</span>
-                        </>
-                      ) : (
-                        <>
-                          <Bot className="w-3 h-3 text-purple-400" />
-                          <span>VoiceTrip</span>
-                        </>
-                      )}
-                    </span>
-                    <span>{t.timestamp}</span>
-                  </div>
-                  <p className="leading-relaxed text-[13px]">{t.text}</p>
-                  {t.sender === 'user' && t.wasCorrected && t.rawTranscript && t.rawTranscript.toLowerCase() !== t.text.toLowerCase() && (
-                    <div className="mt-1 flex items-center gap-1.5 text-[11px] text-cyan-300/90 font-mono bg-cyan-950/80 px-2 py-0.5 rounded-md border border-cyan-800/40 w-fit">
-                      <span>✨ Heard: "{t.rawTranscript}"</span>
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* SECTION 5: DEVELOPER MODE AUDIT & TELEMETRY (Requirement 26) */}
+        {/* SECTION 3: DEVELOPER MODE AUDIT & TELEMETRY */}
         {showDevMode && (
-          <div className="p-6 rounded-3xl bg-slate-950 border border-cyan-800/60 shadow-2xl flex flex-col gap-4 text-xs font-mono animate-slide-up" id="dev-mode-panel">
+          <div
+            className="p-6 rounded-3xl bg-slate-950 border border-cyan-800/60 shadow-2xl flex flex-col gap-4 text-xs font-mono animate-slide-up"
+            id="dev-mode-panel"
+          >
             <div className="flex items-center justify-between pb-3 border-b border-cyan-900/50 text-cyan-400">
               <span className="font-bold flex items-center gap-2">
                 <Terminal className="w-4 h-4" />
                 DEVELOPER MODE — CONVERSATION &amp; STATE TELEMETRY
               </span>
-              <span className="text-[10px] text-slate-400">10-Field Audit Trail</span>
+              <span className="text-[10px] text-slate-400">Multi-Turn Session State</span>
             </div>
 
-            {/* 10 Canonical Audit Fields */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               <div className="p-3 rounded-xl bg-slate-900/70 border border-slate-800 flex flex-col gap-1">
-                <span className="text-[10px] text-slate-500 uppercase font-semibold">1. CURRENT SESSION ID:</span>
-                <span className="font-semibold text-slate-200" id="dev-session-id">{devAudit.sessionId}</span>
-              </div>
-
-              <div className="p-3 rounded-xl bg-slate-900/70 border border-slate-800 flex flex-col gap-1">
-                <span className="text-[10px] text-slate-500 uppercase font-semibold">2. CURRENT TURN / GENERATION:</span>
-                <span className="font-semibold text-slate-200" id="dev-generation-id">Turn {devAudit.turnId} • {devAudit.generationId}</span>
-              </div>
-
-              <div className="p-3 rounded-xl bg-slate-900/70 border border-slate-800 flex flex-col gap-1 md:col-span-2">
-                <span className="text-[10px] text-slate-500 uppercase font-semibold">3. PREVIOUS CANONICAL CONTEXT:</span>
-                <span className="font-semibold text-cyan-300" id="dev-prev-context">
-                  {devAudit.previousContext || 'None (Initial Request)'}
-                </span>
-              </div>
-
-              <div className="p-3 rounded-xl bg-slate-900/70 border border-slate-800 flex flex-col gap-1 md:col-span-2">
-                <span className="text-[10px] text-slate-500 uppercase font-semibold">4. NEW USER TRANSCRIPT:</span>
-                <span className="font-semibold text-slate-100" id="dev-user-transcript">{devAudit.userTranscript || '(None)'}</span>
-              </div>
-
-              <div className="p-3 rounded-xl bg-slate-900/70 border border-slate-800 flex flex-col gap-1">
-                <span className="text-[10px] text-slate-500 uppercase font-semibold">5. REQUEST TYPE:</span>
-                <span
-                  id="dev-request-type"
-                  className={`font-bold px-2 py-0.5 rounded w-fit text-[11px] ${
-                    devAudit.requestType === 'FOLLOW_UP'
-                      ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40'
-                      : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
-                  }`}
-                >
-                  {devAudit.requestType}
+                <span className="text-[10px] text-slate-500 uppercase font-semibold">1. ACTIVE SESSION ID:</span>
+                <span className="font-semibold text-slate-200 truncate" id="dev-session-id">
+                  {activeSessionId}
                 </span>
               </div>
 
               <div className="p-3 rounded-xl bg-slate-900/70 border border-slate-800 flex flex-col gap-1">
-                <span className="text-[10px] text-slate-500 uppercase font-semibold">6. TOOL SELECTED:</span>
-                <span className="font-semibold text-purple-300" id="dev-tool-selected">{devAudit.toolSelected}</span>
+                <span className="text-[10px] text-slate-500 uppercase font-semibold">2. CURRENT GENERATION:</span>
+                <span className="font-semibold text-slate-200" id="dev-generation-id">
+                  Turn {turns.length} • {currentGenerationId}
+                </span>
               </div>
 
               <div className="p-3 rounded-xl bg-slate-900/70 border border-slate-800 flex flex-col gap-1 md:col-span-2">
-                <span className="text-[10px] text-slate-500 uppercase font-semibold">7. MERGED CANONICAL CONTEXT:</span>
+                <span className="text-[10px] text-slate-500 uppercase font-semibold">3. PIPELINE STAGE AUDIT:</span>
+                <div className="flex items-center gap-3 text-[11px]">
+                  <span className="text-slate-400">STT: <b className="text-cyan-400">{sttStatus}</b></span>
+                  <span className="text-slate-400">Gemini: <b className="text-blue-400">{geminiStatus}</b></span>
+                  <span className="text-slate-400">Tool: <b className="text-purple-400">{toolStatus}</b></span>
+                  {userTranscript && <span className="text-slate-500 truncate max-w-xs">User: {userTranscript}</span>}
+                  {aiTranscript && <span className="text-slate-500 truncate max-w-xs">AI: {aiTranscript}</span>}
+                </div>
+              </div>
+
+              <div className="p-3 rounded-xl bg-slate-900/70 border border-slate-800 flex flex-col gap-1 md:col-span-2">
+                <span className="text-[10px] text-slate-500 uppercase font-semibold">4. CANONICAL CONTEXT:</span>
                 <pre className="text-slate-300 overflow-x-auto max-h-28 whitespace-pre-wrap text-[11px]" id="dev-merged-context">
-                  {JSON.stringify(devAudit.mergedContext, null, 2)}
+                  {JSON.stringify(canonicalContext || devAudit.mergedContext, null, 2)}
                 </pre>
               </div>
 
               <div className="p-3 rounded-xl bg-slate-900/70 border border-slate-800 flex flex-col gap-1 md:col-span-2">
-                <span className="text-[10px] text-slate-500 uppercase font-semibold">8. TOOL ARGUMENTS PASSED:</span>
-                <pre className="text-slate-300 overflow-x-auto max-h-24 whitespace-pre-wrap text-[11px]" id="dev-tool-arguments">
-                  {JSON.stringify(devAudit.toolArguments, null, 2)}
-                </pre>
-              </div>
-
-              <div className="p-3 rounded-xl bg-slate-900/70 border border-slate-800 flex flex-col gap-1 md:col-span-2">
-                <span className="text-[10px] text-slate-500 uppercase font-semibold">9. TOOL RESULTS:</span>
-                <pre className="text-slate-300 overflow-x-auto max-h-36 whitespace-pre-wrap text-[11px]" id="dev-tool-results">
-                  {JSON.stringify(devAudit.toolResults, null, 2)}
-                </pre>
-              </div>
-
-              <div className="p-3 rounded-xl bg-slate-900/70 border border-slate-800 flex flex-col gap-1 md:col-span-2">
-                <span className="text-[10px] text-slate-500 uppercase font-semibold">10. FINAL AI RESPONSE (RIME TTS):</span>
-                <span className="font-semibold text-emerald-300" id="dev-final-response">{devAudit.finalResponse || '(None)'}</span>
-              </div>
-            </div>
-
-            {/* Audio Pipeline Diagnostics Grid */}
-            <div className="pt-3 border-t border-slate-800">
-              <div className="text-[10px] text-slate-500 uppercase font-bold mb-2 flex items-center gap-1.5">
-                <Layers className="w-3.5 h-3.5" />
-                Pipeline Diagnostics
-              </div>
-              <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-7 gap-2 text-slate-300 text-[11px]">
-                <div className="p-2.5 rounded-xl bg-slate-900/60 border border-slate-800">
-                  <span className="text-slate-500 block text-[9px]">STT STATUS</span>
-                  <span id="dev-stt-status" className={sttStatus === 'SUCCESS' ? 'text-emerald-400 font-bold' : sttStatus === 'FAILED' ? 'text-red-400' : 'text-slate-300'}>
-                    {sttStatus}
-                  </span>
-                </div>
-                <div className="p-2.5 rounded-xl bg-slate-900/60 border border-slate-800">
-                  <span className="text-slate-500 block text-[9px]">GEMINI INTENT</span>
-                  <span id="dev-gemini-status" className={geminiStatus === 'SUCCESS' ? 'text-emerald-400 font-bold' : geminiStatus === 'FAILED' ? 'text-red-400' : 'text-slate-300'}>
-                    {geminiStatus}
-                  </span>
-                </div>
-                <div className="p-2.5 rounded-xl bg-slate-900/60 border border-slate-800">
-                  <span className="text-slate-500 block text-[9px]">TOOL STATUS</span>
-                  <span id="dev-tool-status" className={toolStatus === 'SUCCESS' ? 'text-emerald-400 font-bold' : toolStatus === 'FAILED' ? 'text-red-400' : 'text-slate-300'}>
-                    {toolStatus}
-                  </span>
-                </div>
-                <div className="p-2.5 rounded-xl bg-slate-900/60 border border-slate-800">
-                  <span className="text-slate-500 block text-[9px]">RIME HTTP</span>
-                  <span id="dev-rime-request" className={rimePlayer.telemetry.rimeRequest === 'SUCCESS' ? 'text-emerald-400 font-bold' : 'text-slate-300'}>
-                    {rimePlayer.telemetry.rimeRequest}
-                  </span>
-                </div>
-                <div className="p-2.5 rounded-xl bg-slate-900/60 border border-slate-800">
-                  <span className="text-slate-500 block text-[9px]">RIME BYTES</span>
-                  <span>{rimePlayer.telemetry.responseSize} B</span>
-                </div>
-                <div className="p-2.5 rounded-xl bg-slate-900/60 border border-slate-800">
-                  <span className="text-slate-500 block text-[9px]">AUDIO DURATION</span>
-                  <span>{rimePlayer.telemetry.audioDuration > 0 ? `${rimePlayer.telemetry.audioDuration}s` : 'Unknown'}</span>
-                </div>
-                <div className="p-2.5 rounded-xl bg-slate-900/60 border border-slate-800">
-                  <span className="text-slate-500 block text-[9px]">PLAY STATUS</span>
-                  <span className={rimePlayer.isPlaying ? 'text-purple-400 animate-pulse' : 'text-slate-300'}>
-                    {rimePlayer.isPlaying ? 'PLAYING' : rimePlayer.telemetry.play}
-                  </span>
-                </div>
+                <span className="text-[10px] text-slate-500 uppercase font-semibold">5. LAST TOOL EXECUTED:</span>
+                <span className="font-semibold text-purple-300" id="dev-tool-selected">
+                  {lastToolName || devAudit.toolSelected || 'None'}
+                </span>
               </div>
             </div>
           </div>
@@ -1227,13 +1211,14 @@ export default function App() {
       </main>
 
       {/* Footer */}
-      <footer className="relative z-10 w-full max-w-4xl pt-6 mt-6 border-t border-slate-800/60 flex flex-col sm:flex-row items-center justify-between text-[11px] text-slate-500 gap-2">
+      <footer className="relative z-10 w-full max-w-4xl pt-4 mt-4 border-t border-slate-800/60 flex flex-col sm:flex-row items-center justify-between text-[11px] text-slate-500 gap-2">
         <div className="flex items-center gap-2">
           <span>VoiceTrip • Powered by Deepgram Nova-2 + Gemini + Rime Mist</span>
         </div>
         <div className="flex items-center gap-4">
           <span>Voice: Rime Amber</span>
           <span>Interruption: Active</span>
+          <span>Manual Mic: Strict</span>
         </div>
       </footer>
     </div>

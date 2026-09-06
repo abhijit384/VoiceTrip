@@ -163,6 +163,22 @@ class CanonicalTravelContext(BaseModel):
         default=None,
         description="Concise 1-sentence clarifying question to ask the user",
     )
+    pending_field: Optional[str] = Field(
+        default=None,
+        description="Specific missing field awaiting user response e.g. 'date', 'origin', 'destination', 'passengers', 'mode'",
+    )
+    pending_question: Optional[str] = Field(
+        default=None,
+        description="Active question asked to the user in the previous assistant turn",
+    )
+    last_tool_name: Optional[str] = Field(
+        default=None,
+        description="Name of the last executed tool in this conversation",
+    )
+    last_tool_results: Optional[Any] = Field(
+        default=None,
+        description="Compact summary of last executed tool results",
+    )
 
     def to_readable_summary(self) -> str:
         """Returns a clear concise user-facing summary of what was understood."""

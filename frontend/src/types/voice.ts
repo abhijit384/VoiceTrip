@@ -93,7 +93,20 @@ export interface ConversationTurn {
   state?: VoiceState;
   isStale?: boolean;
   isInterrupted?: boolean;
+  isLoading?: boolean;
+  loadingStatus?: string;
   toolDetails?: ToolDetails;
+}
+
+export interface ChatSession {
+  id: string;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+  turns: ConversationTurn[];
+  canonicalContext?: any | null;
+  lastToolName?: string | null;
+  lastToolResults?: any | null;
 }
 
 export interface LatencyMetrics {
