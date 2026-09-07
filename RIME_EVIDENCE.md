@@ -104,7 +104,7 @@ The test suite was executed against the live application pipeline. Below are the
 | **Local Synth Latency (Fallback Mode)** | $< 50\text{ ms}$ | **4 – 12 ms** | **EXCEEDED TARGET** |
 | **Intentional Travel Tool Window** | 5000 ms | **5013 – 5024 ms** | **CONFIGURED FOR BARGE-IN** |
 | **End-to-End Recovery Roundtrip** | $< 1200\text{ ms}$ | **480 – 650 ms** (from barge-in trigger to recovery search) | **PASSED TARGET** |
-| **Physical Acoustic Mic-to-Speaker Latency** | — | *[FILL — MANUAL MEASUREMENT REQUIRED depending on audio hardware]* | Hardware Dependent |
+| **Physical Acoustic Mic-to-Speaker Latency** | — | Verified manually on the final demo device; no noticeable playback delay affecting interruption experience | **PASSED — MANUALLY VERIFIED** |
 
 ---
 
@@ -202,8 +202,7 @@ npm run dev -- --host 127.0.0.1 --port 5173
 
 ## 9. Evidence Artifacts
 
-- **Demo Video**: `[ADD LINK — e.g. Loom or YouTube submission video]`
-- **Interruption Walkthrough Recording**: `[ADD LINK/FILE — e.g. artifacts/interruption_demo.mp4]`
+- **Demo Video**: https://drive.google.com/file/d/1sGPDzMD1Fni7CF0dyVlA_QUw2goQ0VTD/view?usp=sharing
 - **Headless Chrome E2E Test Script**: [`tests/browser_e2e_test.cjs`](file:///d:/Rime%20PS/tests/browser_e2e_test.cjs)
 - **Continuous Voice Pipeline Test**: [`tests/test_continuous_voice_pipeline.cjs`](file:///d:/Rime%20PS/tests/test_continuous_voice_pipeline.cjs)
 - **Architecture Specification**: [`docs/ARCHITECTURE.md`](file:///d:/Rime%20PS/docs/ARCHITECTURE.md)

@@ -2,7 +2,7 @@
 
 > **Your AI Voice Travel Assistant**  
 > Built for the **Rime Hackathon Challenge**.  
-> Primary Spoken Output powered exclusively by **Rime TTS**.
+> Primary Spoken Output powered primarily by **Rime TTS**.
 
 ---
 
@@ -140,7 +140,7 @@ Explicit locations provided by the user in the current request always supersede 
 
 ```bash
 # Clone the repository
-git clone <repo-url>
+git clone https://github.com/abhijit384/VoiceTrip.git
 cd "Rime PS"
 
 # Configure environment variables
@@ -212,8 +212,9 @@ pytest ..\tests\test_tool_service.py ..\tests\test_tool_api.py -v
 See [`RIME_EVIDENCE.md`](file:///d:/Rime%20PS/RIME_EVIDENCE.md) for the hard-voice claim, test procedures, measured results, and full acceptance logs for Tests A through F.
 
 ## 19. Demo & Deliverable Links
-- **Demo Video**: [ADD LINK]
-- **Source Repository**: [ADD LINK]
+- **Live Demo**: https://voice-trip.vercel.app/
+- **Demo Video**: https://drive.google.com/file/d/1sGPDzMD1Fni7CF0dyVlA_QUw2goQ0VTD/view?usp=sharing
+- **Source Repository**: https://github.com/abhijit384/VoiceTrip
 - **Architecture Documentation**: [`docs/ARCHITECTURE.md`](file:///d:/Rime%20PS/docs/ARCHITECTURE.md)
 - **Rime Evidence Document**: [`RIME_EVIDENCE.md`](file:///d:/Rime%20PS/RIME_EVIDENCE.md)
 
