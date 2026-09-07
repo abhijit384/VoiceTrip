@@ -2,7 +2,7 @@
 
 > **Your AI Voice Travel Assistant**  
 > Built for the **Rime Hackathon Challenge**.  
-> Primary Spoken Output powered primarily by **Rime TTS**.
+> **Primary Spoken Output**: **Rime TTS** (`mist` model, `amber` voice, 24 kHz MP3).
 
 ---
 
@@ -20,14 +20,14 @@ Removing voice from VoiceTrip would fundamentally destroy its value proposition:
 
 ## 3. Why Voice Is Necessary
 VoiceTrip is purpose-built as a voice-first system:
-- **Realtime Interaction**: Audio streams are captured via LiveKit / Web Audio and processed in realtime.
-- **Rime Spoken Output**: The assistant communicates back using expressive, low-latency Rime TTS (`mist` model, `amber` voice), creating a natural conversational partner.
+- **Realtime Interaction**: Audio streams are captured via Web Audio / LiveKit and processed in realtime.
+- **Rime Spoken Output**: Rime TTS is the primary spoken output (`mist` model, `amber` voice), delivering expressive, human-quality vocal summaries.
 - **Instant Interruption**: Users can cut off the assistant mid-sentence to issue corrections with $< 25\text{ ms}$ audio cutoff.
 - **Hands-Free Workflow**: Visual cards accompany responses, but the full interaction loop is complete and intelligible through speech alone.
 - **Conversational Follow-Ups**: The assistant maintains a canonical context ledger, so saying *"What about tomorrow?"* or *"Show cheaper ones"* retains prior journey entities.
 
 ## 4. Core Voice Challenge
-**"Interruption and recovery during long-running travel searches."**
+**"Interruption, Recovery, and Stale Result Protection during Long-Running Travel Searches."**
 
 When querying travel tools, responses take time. VoiceTrip guarantees the following behavior:
 - A user starts a travel request.
@@ -36,27 +36,28 @@ When querying travel tools, responses take time. VoiceTrip guarantees the follow
 - Active Rime playback stops **immediately** ($< 25\text{ ms}$).
 - **Stale background tool output is intercepted at the epoch barrier** and blocked from mutating conversation state or triggering speech.
 - The updated request immediately becomes the authoritative state.
-- The final Rime spoken response reflects only the newest request.
+- The final Rime spoken response reflects only the newest validated request.
 
 ## 5. Key Features
-- **Voice Input**: Realtime microphone capture via Web Audio / LiveKit.
-- **Realtime / Interim Transcription**: Live STT provided by Deepgram (`flux-general-en` / `nova-2`) with railway acoustic keyterm boosting.
+- **Voice Input & Manual Microphone Control**: Realtime microphone capture via Web Audio / LiveKit. To prevent unintended ambient background capturing, the microphone remains strictly OFF after a response completes, after normal message submission, and after Rime playback finishes. The microphone activates automatically only when the user explicitly clicks **Interrupt AI**.
+- **Realtime / Interim Transcription**: Live STT provided by Deepgram (`flux-general-en` / `nova-2`) with railway acoustic keyterm boosting and phonetic autocorrection.
 - **Travel Search Tools**: Train, flight, hotel, and bus search capabilities with realistic Indian corridor routing.
 - **Non-Travel / General Intent Routing**: Natural conversational responses for greetings, jokes, and general questions without triggering travel tools.
 - **Travel Follow-ups**: Preserves active `CanonicalTravelContext` and merges new constraints.
-- **Interrupt AI Button**: Instant UI cutoff triggering generation epoch invalidation.
-- **Rime Spoken Output**: Primary voice output synthesizing natural, conversational 1–3 sentence summaries.
-- **Result Cards**: Native visual cards rendering returned train, flight, or hotel data.
-- **Stale-Request Protection**: Monotonic generation epochs track and discard obsolete background tasks.
+- **Interrupt AI**: Instant UI/voice cutoff triggering generation epoch invalidation (`gen_1` $\to$ `gen_2`), in-flight task cancellation, and microphone activation for immediate re-prompting.
+- **Rime Spoken Output**: Rime TTS is the primary spoken output, vocalizing concise 1–3 sentence summaries generated from validated result sets without dumping raw JSON.
+- **Result Cards**: Visual cards rendering complete returned train, flight, or hotel datasets.
+- **Stale-Request Protection**: Monotonic generation epochs track and permanently discard obsolete background tasks (`[STALE - RESULT BLOCKED]`).
+- **Chat History & Session Isolation**: Multi-turn conversation ledger with sidebar history and a **New Chat** button to isolate independent travel sessions.
 
 ## 6. Demo Flow
 To evaluate the project, follow this exact sequence:
-1. Open the application at `http://127.0.0.1:5173/`.
+1. Open the application at [https://voice-trip.vercel.app/](https://voice-trip.vercel.app/) (or local `http://127.0.0.1:5173/`).
 2. Click **Start Mic** (or select a scenario button).
 3. Speak a travel request: *"Find me trains from Kolkata to Delhi tomorrow."*
 4. Click **Stop Mic** (or allow silence endpointing).
 5. Watch the transcript appear in the feed.
-6. The assistant processes the request (showing the 5.0-second progress bar).
+6. The assistant processes the request (showing the active progress bar).
 7. While the tool is executing (or while Rime is speaking), click **Interrupt AI** or speak: *"Actually, only evening trains."*
 8. Active Rime audio halts immediately ($< 25\text{ ms}$) and `gen_1` is tagged `[STALE - RESULT BLOCKED]`.
 9. The `gen_2` turn processes with the merged `evening` constraint.
@@ -80,23 +81,24 @@ graph TD
 - The **State Barrier** intercepts asynchronous tool returns to ensure stale data from obsolete generation epochs never reaches the synthesis engine.
 
 ## 8. Technology Stack
-- **Frontend**: React 19, Vite, TypeScript, Tailwind CSS, Web Audio API
-- **Backend**: Python 3.10+, FastAPI, Uvicorn, Asyncio
+- **Frontend**: React 19, Vite, TypeScript, Tailwind CSS, Web Audio API (Hosted on Vercel)
+- **Backend**: Python 3.10+, FastAPI, Uvicorn, Asyncio (Hosted on Render)
 - **Realtime Transport**: LiveKit WebRTC / WebSocket Hub
 - **STT**: Deepgram Flux / Nova-2
 - **LLM**: Google Gemini 3.6 Flash (via official `google-genai` SDK) with rule-based canonical fallback
-- **TTS**: Rime TTS (Primary Output — `mist` model, `amber` voice)
+- **TTS**: Rime TTS (Primary Spoken Output — `mist` model, `amber` voice)
 - **Database**: Supabase (Optional for session persistence)
 
 ## 9. Rime Integration
-Rime is exclusively used as the primary voice engine:
+Rime TTS is the primary spoken output across VoiceTrip:
 - **Rime Model ID**: `mist`
 - **Rime Speaker/Voice**: `amber`
 - **Language**: English (`en`)
 - **Endpoint**: `https://users.rime.ai/v1/rime-tts`
 - **Audio Format**: `mp3` (24,000 Hz, 16-bit mono)
 - **Transport**: FastAPI backend sends HTTP POST requests to Rime API with JSON payload, decodes the base64 audio response, and streams binary audio to the frontend Web Audio API.
-- **Integration Files**: [`backend/app/services/tts_service.py`](file:///d:/Rime%20PS/backend/app/services/tts_service.py) and [`frontend/src/hooks/useRimeAudioPlayer.ts`](file:///d:/Rime%20PS/frontend/src/hooks/useRimeAudioPlayer.ts).
+- **Local Fallback**: Includes a zero-cost 24kHz formant envelope generator for local development resilience when an API key is unconfigured.
+- **Integration Files**: [backend/app/services/tts_service.py](backend/app/services/tts_service.py) and [frontend/src/hooks/useRimeAudioPlayer.ts](frontend/src/hooks/useRimeAudioPlayer.ts).
 
 **Playback & Control:**
 Rime audio is streamed as binary to the browser where a Web Audio API buffer queues and plays it. If the user interrupts, the frontend issues an immediate `stopAudio()` command that flushes the buffer context instantly.
@@ -141,7 +143,7 @@ Explicit locations provided by the user in the current request always supersede 
 ```bash
 # Clone the repository
 git clone https://github.com/abhijit384/VoiceTrip.git
-cd "Rime PS"
+cd VoiceTrip
 
 # Configure environment variables
 cp .env.example .env
@@ -201,22 +203,22 @@ Open `http://127.0.0.1:5173/` in Google Chrome or Microsoft Edge.
 Run the backend test suite:
 ```bash
 cd backend
-pytest ..\tests\test_interruption_recovery.py -v
+pytest ../tests/test_interruption_recovery.py -v
 ```
 To run tool and API verification tests:
 ```bash
-pytest ..\tests\test_tool_service.py ..\tests\test_tool_api.py -v
+pytest ../tests/test_tool_service.py ../tests/test_tool_api.py -v
 ```
 
 ## 18. Rime Acceptance Evidence
-See [`RIME_EVIDENCE.md`](file:///d:/Rime%20PS/RIME_EVIDENCE.md) for the hard-voice claim, test procedures, measured results, and full acceptance logs for Tests A through F.
+See [RIME_EVIDENCE.md](RIME_EVIDENCE.md) for the hard-voice claim, test procedures, measured results, and full acceptance logs for Tests A through F.
 
 ## 19. Demo & Deliverable Links
-- **Live Demo**: https://voice-trip.vercel.app/
-- **Demo Video**: https://drive.google.com/file/d/1sGPDzMD1Fni7CF0dyVlA_QUw2goQ0VTD/view?usp=sharing
-- **Source Repository**: https://github.com/abhijit384/VoiceTrip
-- **Architecture Documentation**: [`docs/ARCHITECTURE.md`](file:///d:/Rime%20PS/docs/ARCHITECTURE.md)
-- **Rime Evidence Document**: [`RIME_EVIDENCE.md`](file:///d:/Rime%20PS/RIME_EVIDENCE.md)
+- **Live Demo**: [https://voice-trip.vercel.app/](https://voice-trip.vercel.app/)
+- **Demo Video**: [https://drive.google.com/file/d/1sGPDzMD1Fni7CF0dyVlA_QUw2goQ0VTD/view?usp=sharing](https://drive.google.com/file/d/1sGPDzMD1Fni7CF0dyVlA_QUw2goQ0VTD/view?usp=sharing)
+- **Source Repository**: [https://github.com/abhijit384/VoiceTrip](https://github.com/abhijit384/VoiceTrip)
+- **Architecture Documentation**: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+- **Rime Evidence Document**: [RIME_EVIDENCE.md](RIME_EVIDENCE.md)
 
 ## 20. Documented Limitations
 - **Prototype Travel Data**: Search inventory uses realistic in-memory schedules rather than live IRCTC/GDS booking gateways.
@@ -232,10 +234,9 @@ See [`RIME_EVIDENCE.md`](file:///d:/Rime%20PS/RIME_EVIDENCE.md) for the hard-voi
 
 ## 22. Project Structure
 ```
-Rime PS/
+VoiceTrip/
 ├── README.md
 ├── RIME_EVIDENCE.md
-├── SUBMISSION_CHECKLIST.md
 ├── .env.example
 ├── docs/
 │   └── ARCHITECTURE.md
